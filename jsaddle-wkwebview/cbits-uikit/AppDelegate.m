@@ -130,6 +130,16 @@ HsStablePtr global_didFailToRegisterForRemoteNotificationsWithError = 0;
     return NO;
 }
 
+- (void)application:(UIApplication *)application didReceiveRemoteNotification:(NSDictionary *)notification {
+    UIApplicationState state = [[UIApplication sharedApplication] applicationState];
+    if (state == UIApplicationStateBackground || state == UIApplicationStateInactive) {
+      NSString *custom = [notification objectForKey:@"custom"];
+      if (custom != nil) {
+        callWithCString([custom UTF8String], global_applicationUniversalLink);
+      }
+    }
+}
+
 @end
 
 void runInWKWebView(HsStablePtr handler,
