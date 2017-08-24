@@ -106,6 +106,9 @@ import Control.Monad.Trans.Class (MonadTrans(..))
 import Control.Monad.Fix (MonadFix)
 import Control.Monad.Ref (MonadAtomicRef(..), MonadRef(..))
 import Control.Concurrent.STM.TVar (TVar)
+import Control.Concurrent.MVar (MVar)
+import Data.Int (Int64)
+import Data.Set (Set)
 import Data.Text (Text)
 import Data.Time.Clock (UTCTime(..))
 import Data.Typeable (Typeable)
@@ -129,13 +132,16 @@ import GHC.Exts (Constraint)
 type JSContextRef = ()
 #else
 data JSContextRef = JSContextRef {
-    startTime          :: UTCTime
-  , doSendCommand      :: Command -> IO Result
-  , doSendAsyncCommand :: AsyncCommand -> IO ()
-  , addCallback        :: Object -> JSCallAsFunction -> IO ()
-  , freeCallback       :: Object -> IO ()
-  , nextRef            :: TVar JSValueRef
-  , doEnableLogging    :: Bool -> IO ()
+    contextId              :: Int64
+  , startTime              :: UTCTime
+  , doSendCommand          :: Command -> IO Result
+  , doSendAsyncCommand     :: AsyncCommand -> IO ()
+  , addCallback            :: Object -> JSCallAsFunction -> IO ()
+  , nextRef                :: TVar JSValueRef
+  , doEnableLogging        :: Bool -> IO ()
+  , finalizerThreads       :: MVar (Set Text)
+  , animationFrameHandlers :: MVar [Double -> JSM ()]
+  , liveRefs               :: MVar (Set Int64)
 }
 #endif
 
@@ -203,7 +209,7 @@ type MonadJSM = MonadIO
 class (Applicative m, MonadIO m) => MonadJSM m where
     liftJSM' :: JSM a -> m a
 
-    default liftJSM' :: (MonadJSM m', MonadTrans t) => JSM a' -> t m' a'
+    default liftJSM' :: (MonadJSM m', MonadTrans t, m ~ t m') => JSM a -> m a
     liftJSM' = lift . (liftJSM' :: MonadJSM m' => JSM a -> m' a)
     {-# INLINE liftJSM' #-}
 
@@ -334,7 +340,7 @@ type MutableJSArray = SomeJSArray Mutable
 type STJSArray s    = SomeJSArray (STMutable s)
 
 -- | See 'JavaScript.Object.Internal.Object'
-newtype Object = Object JSVal deriving(Show, ToJSON, FromJSON)
+newtype Object = Object JSVal
 
 -- | See 'GHCJS.Nullable.Nullable'
 newtype Nullable a = Nullable a
@@ -358,7 +364,8 @@ newtype JSStringForSend = JSStringForSend Text deriving(Show, ToJSON, FromJSON, 
 instance NFData JSStringForSend
 
 -- | Command sent to a JavaScript context for execution asynchronously
-data AsyncCommand = FreeRef JSValueForSend
+data AsyncCommand = FreeRef Text JSValueForSend
+                  | FreeRefs Text
                   | SetPropertyByName JSObjectForSend JSStringForSend JSValueForSend
                   | SetPropertyAtIndex JSObjectForSend Int JSValueForSend
                   | StringToValue JSStringForSend JSValueForSend
@@ -371,6 +378,7 @@ data AsyncCommand = FreeRef JSValueForSend
                   | NewEmptyObject JSValueForSend
                   | NewAsyncCallback JSValueForSend
                   | NewSyncCallback JSValueForSend
+                  | FreeCallback JSValueForSend
                   | NewArray [JSValueForSend] JSValueForSend
                   | EvaluateScript JSStringForSend JSValueForSend
                   | SyncWithAnimationFrame JSValueForSend
@@ -439,8 +447,8 @@ instance ToJSON Result where
 
 instance FromJSON Result
 
-data BatchResults = Success [Result]
-                  | Failure [Result] JSValueReceived
+data BatchResults = Success [JSValueReceived] [Result]
+                  | Failure [JSValueReceived] [Result] JSValueReceived
              deriving (Show, Generic)
 
 instance ToJSON BatchResults where
@@ -450,7 +458,7 @@ instance FromJSON BatchResults
 
 data Results = BatchResults Int BatchResults
              | Duplicate Int Int
-             | Callback Int BatchResults JSValueReceived JSValueReceived [JSValueReceived]
+             | Callback Int BatchResults JSValueReceived JSValueReceived JSValueReceived [JSValueReceived]
              | ProtocolError Text
              deriving (Show, Generic)
 
