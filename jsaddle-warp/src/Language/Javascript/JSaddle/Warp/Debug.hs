@@ -26,7 +26,7 @@ import qualified Network.HTTP.Types as H
 import qualified Data.ByteString.Lazy as LBS
 import Network.WebSockets (defaultConnectionOptions)
 import Data.Monoid
-import Foreign.Store (newStore, lookupStore, readStore)
+import Foreign.Store (readStore, lookupStore, writeStore, Store(..))
 
 -- | Start or restart the server.
 -- To run this as part of every :reload use
@@ -86,13 +86,13 @@ debugWrapper run = do
              start' <- takeMVar mvar
              n <- stop
              start' n >>= restarter mvar
-    lookupStore shutdown_0 >>= \case
+    lookupStore storeId >>= \case
         Nothing -> do
             restartMVar <- newMVar start
             void . forkIO $ restarter restartMVar (return 0)
-            void $ newStore restartMVar
+            void $ writeStore (Store storeId) restartMVar
         Just shutdownStore -> do
             restartMVar :: MVar (Int -> IO (IO Int)) <- readStore shutdownStore
             void $ tryTakeMVar restartMVar
             putMVar restartMVar start
-  where shutdown_0 = 0
+  where storeId = 354
