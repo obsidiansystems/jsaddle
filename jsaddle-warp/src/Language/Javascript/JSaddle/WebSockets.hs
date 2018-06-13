@@ -126,7 +126,7 @@ jsaddleOr opts entryPoint otherApp = do
 
 
 jsaddleApp :: Application
-jsaddleApp = jsaddleAppWithJs $ jsaddleJs Nothing False
+jsaddleApp = jsaddleAppWithJs $ jsaddleJs False
 
 jsaddleAppWithJs :: ByteString -> Application
 jsaddleAppWithJs js req sendResponse =
@@ -140,7 +140,7 @@ jsaddleWithAppOr opts entryPoint otherApp = jsaddleOr opts entryPoint $ \req sen
      (jsaddleAppPartial req sendResponse))
 
 jsaddleAppPartial :: Request -> (Response -> IO ResponseReceived) -> Maybe (IO ResponseReceived)
-jsaddleAppPartial = jsaddleAppPartialWithJs $ jsaddleJs Nothing False
+jsaddleAppPartial = jsaddleAppPartialWithJs $ jsaddleJs False
 
 indexResponse :: Response
 indexResponse = W.responseLBS H.status200 [("Content-Type", "text/html")] indexHtml
@@ -151,11 +151,14 @@ jsaddleAppPartialWithJs js req sendResponse = case (W.requestMethod req, W.pathI
     ("GET", ["jsaddle.js"]) -> Just $ sendResponse $ W.responseLBS H.status200 [("Content-Type", "application/javascript")] js
     _ -> Nothing
 
+jsaddleJs :: Bool -> ByteString
+jsaddleJs = jsaddleJs' Nothing
+
 --TODO: Make refreshOnLoad work
 -- Use this to generate this string for embedding
 -- sed -e 's|\\|\\\\|g' -e 's|^|    \\|' -e 's|$|\\n\\|' -e 's|"|\\"|g' data/jsaddle.js | pbcopy
-jsaddleJs :: Maybe ByteString -> Bool -> ByteString
-jsaddleJs jsaddleUri refreshOnLoad = jsaddleCoreJs <> "\
+jsaddleJs' :: Maybe ByteString -> Bool -> ByteString
+jsaddleJs' jsaddleUri refreshOnLoad = jsaddleCoreJs <> "\
     \if(typeof global !== \"undefined\") {\n\
     \    global.window = global;\n\
     \    global.WebSocket = require('ws');\n\
