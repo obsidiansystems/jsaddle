@@ -22,6 +22,7 @@ module Language.Javascript.JSaddle.WebSockets (
   , jsaddleAppWithJs
   , jsaddleAppPartial
   , jsaddleJs
+  , jsaddleJs'
 ) where
 
 import Control.Monad (forever)
