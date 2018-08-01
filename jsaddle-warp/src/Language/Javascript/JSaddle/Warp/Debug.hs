@@ -3,6 +3,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 module Language.Javascript.JSaddle.Warp.Debug
   ( debug
+  , debugOr
   , debugWrapper
   , refreshMiddleware
   ) where
@@ -36,6 +37,13 @@ debug port f = do
     debugWrapper $ \withRefresh registerContext ->
         runSettings (setPort port (setTimeout 3600 defaultSettings)) =<<
             jsaddleOr defaultConnectionOptions (registerContext >> f) (withRefresh $ jsaddleAppWithJs $ jsaddleJs Nothing True)
+    putStrLn $ "<a href=\"http://localhost:" <> show port <> "\">run</a>"
+
+debugOr :: Int -> JSM () -> Application -> IO ()
+debugOr port f b = do
+    debugWrapper $ \withRefresh registerContext ->
+        runSettings (setPort port (setTimeout 3600 defaultSettings)) =<<
+            jsaddleOr defaultConnectionOptions (registerContext >> f >> syncPoint) (withRefresh $ jsaddleAppWithJsOr (jsaddleJs True) b)
     putStrLn $ "<a href=\"http://localhost:" <> show port <> "\">run</a>"
 
 refreshMiddleware :: ((Response -> IO ResponseReceived) -> IO ResponseReceived) -> Middleware

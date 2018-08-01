@@ -20,6 +20,7 @@ module Language.Javascript.JSaddle.WebSockets (
   , jsaddleApp
   , jsaddleWithAppOr
   , jsaddleAppWithJs
+  , jsaddleAppWithJsOr
   , jsaddleAppPartial
   , jsaddleJs
   , jsaddleJs'
@@ -131,9 +132,14 @@ jsaddleApp = jsaddleAppWithJs $ jsaddleJs False
 
 jsaddleAppWithJs :: ByteString -> Application
 jsaddleAppWithJs js req sendResponse =
-    fromMaybe
-        (sendResponse $  W.responseLBS H.status403 [("Content-Type", "text/plain")] "Forbidden")
-        (jsaddleAppPartialWithJs js req sendResponse)
+  jsaddleAppWithJsOr js
+    (\_ _ -> sendResponse $ W.responseLBS H.status403 [("Content-Type", "text/plain")] "Forbidden")
+    req sendResponse
+
+jsaddleAppWithJsOr :: ByteString -> Application -> Application
+jsaddleAppWithJsOr js otherApp req sendResponse =
+  fromMaybe (otherApp req sendResponse)
+    (jsaddleAppPartialWithJs js req sendResponse)
 
 jsaddleWithAppOr :: ConnectionOptions -> JSM () -> Application -> IO Application
 jsaddleWithAppOr opts entryPoint otherApp = jsaddleOr opts entryPoint $ \req sendResponse ->
