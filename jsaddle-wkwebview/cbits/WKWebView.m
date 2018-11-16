@@ -122,5 +122,14 @@ void loadBundleFile(WKWebView *webView, const char * _Nonnull file, const char *
     }
 }
 
+void generalPasteboardSetStringC(const char * _Nonnull s) {
+  NSString *txt = [NSString stringWithCString:s encoding: NSUTF8StringEncoding];
+#ifdef USE_UIKIT
+  [UIPasteboard generalPasteboard].string = txt;
+#else
+  [[NSPasteboard generalPasteboard] clearContents];
+  [[NSPasteboard generalPasteboard] setString:txt forType:NSPasteboardTypeString];
+#endif
+}
 
 

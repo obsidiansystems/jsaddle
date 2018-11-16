@@ -4,6 +4,7 @@ module Language.Javascript.JSaddle.WKWebView.Internal
     , jsaddleMainFile
     , WKWebView(..)
     , mainBundleResourcePath
+    , generalPasteboardSetString
     ) where
 
 import Control.Monad (void, join)
@@ -13,6 +14,7 @@ import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Data.Monoid ((<>))
 import Data.ByteString (useAsCString, packCString)
 import qualified Data.ByteString as BS (ByteString)
+import qualified Data.ByteString.Unsafe as BS (unsafeUseAsCString)
 import Data.ByteString.Lazy (ByteString, toStrict, fromStrict)
 import Data.Aeson (encode, decode)
 
@@ -41,6 +43,7 @@ foreign import ccall loadBundleFile :: WKWebView -> CString -> CString -> IO ()
 foreign import ccall evaluateJavaScript :: WKWebView -> CString -> IO ()
 foreign import ccall completeSync :: JSaddleHandler -> CString -> IO ()
 foreign import ccall mainBundleResourcePathC :: IO CString
+foreign import ccall generalPasteboardSetStringC :: CString -> IO ()
 
 -- | Run JSaddle in WKWebView
 jsaddleMain :: JSM () -> WKWebView -> IO ()
@@ -147,4 +150,7 @@ mainBundleResourcePath = do
     if bs == nullPtr
         then return Nothing
         else Just <$> packCString bs
+
+generalPasteboardSetString :: BS.ByteString -> IO ()
+generalPasteboardSetString bs = BS.unsafeUseAsCString bs generalPasteboardSetStringC
 
