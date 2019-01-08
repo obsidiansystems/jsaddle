@@ -173,6 +173,7 @@ import Control.Concurrent.STM.TVar
        (writeTVar, readTVar, modifyTVar')
 import Control.Monad.Primitive
 import Control.Monad.IO.Unlift (MonadUnliftIO(..), UnliftIO(..))
+import qualified Control.Monad.Fail as Fail
 #endif
 
 #if MIN_VERSION_base(4,9,0) && defined(CHECK_UNCHECKED)
@@ -218,7 +219,7 @@ data JSContextRef = JSContextRef
 #ifdef ghcjs_HOST_OS
 type JSM = IO
 #else
-newtype JSM a = JSM { unJSM :: ReaderT JSContextRef IO a } deriving (Functor, Applicative, Monad, MonadFix, MonadThrow)
+newtype JSM a = JSM { unJSM :: ReaderT JSContextRef IO a } deriving (Functor, Applicative, Monad, MonadFix, MonadThrow, Fail.MonadFail)
 #endif
 
 -- | Type we can give to functions that are pure when using ghcjs, but
