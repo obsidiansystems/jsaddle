@@ -160,12 +160,11 @@ runJavaScript sendBatch entryPoint = do
           , doSendCommand = \cmd -> cmd `deepseq` do
                 result <- newEmptyMVar
                 atomically $ writeTChan commandChan (Right (cmd, result))
-                unsafeInterleaveIO $
-                    takeMVar result >>= \case
-                        (ThrowJSValue v) -> do
-                            jsval <- wrapJSVal' ctx v
-                            throwIO $ JSException jsval
-                        r -> return r
+                takeMVar result >>= \case
+                    (ThrowJSValue v) -> do
+                        jsval <- wrapJSVal' ctx v
+                        throwIO $ JSException jsval
+                    r -> return r
           , doSendAsyncCommand = \cmd -> cmd `deepseq` atomically (writeTChan commandChan $ Left cmd)
           , addCallback = \(Object (JSVal ioref)) cb -> do
                 val <- readIORef ioref
