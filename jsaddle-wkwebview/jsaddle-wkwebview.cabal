@@ -34,6 +34,7 @@ library
     if impl(ghcjs)
         hs-source-dirs: src-ghcjs
     else
+        ghc-options: -dynamic -shared -fPIC
         build-depends:
             aeson >=0.8.0.2 && <1.5,
             bytestring >=0.10.6.0 && <0.11,
