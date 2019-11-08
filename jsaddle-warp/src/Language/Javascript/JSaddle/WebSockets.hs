@@ -166,7 +166,7 @@ jsaddleJs = jsaddleJs' Nothing
 -- sed -e 's|\\|\\\\|g' -e 's|^|    \\|' -e 's|$|\\n\\|' -e 's|"|\\"|g' data/jsaddle.js | pbcopy
 jsaddleJs' :: Maybe ByteString -> Bool -> ByteString
 jsaddleJs' jsaddleUri refreshOnLoad = jsaddleCoreJs <> "\
-    \if(typeof global !== \"undefined\" && typeof require == \"function\") {\n\
+    \if(typeof global !== \"undefined\" && typeof require === \"function\") {\n\
     \    global.window = global;\n\
     \    global.WebSocket = require('ws');\n\
     \}\n\
