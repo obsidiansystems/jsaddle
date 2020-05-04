@@ -19,7 +19,7 @@ import Language.Javascript.JSaddle.WebSockets
 import Language.Javascript.JSaddle.Types (JSM)
 import Network.Wai.Handler.Warp (runSettings, setPort, setTimeout, defaultSettings)
 import Network.Wai
-       (Middleware, Response, ResponseReceived)
+       (Middleware, Response, ResponseReceived, Application)
 import qualified Network.Wai as W
        (responseLBS, requestMethod, pathInfo)
 import qualified Network.HTTP.Types as H
@@ -36,7 +36,7 @@ debug :: Int -> JSM () -> IO ()
 debug port f = do
     debugWrapper $ \withRefresh registerContext ->
         runSettings (setPort port (setTimeout 3600 defaultSettings)) =<<
-            jsaddleOr defaultConnectionOptions (registerContext >> f) (withRefresh $ jsaddleAppWithJs $ jsaddleJs Nothing True)
+            jsaddleOr defaultConnectionOptions (registerContext >> f) (withRefresh $ jsaddleAppWithJs $ jsaddleJs True)
     putStrLn $ "<a href=\"http://localhost:" <> show port <> "\">run</a>"
 
 debugOr :: Int -> JSM () -> Application -> IO ()
