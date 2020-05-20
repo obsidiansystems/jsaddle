@@ -148,7 +148,7 @@ import Control.Monad.Trans.Class (MonadTrans(..))
 import Control.Monad.Fix (MonadFix)
 import Control.Concurrent.Async (withAsync, wait)
 import Control.Concurrent.STM.TVar (TVar)
-import Control.Concurrent.MVar (MVar, swapMVar, modifyMVar, readMVar)
+import Control.Concurrent.MVar (MVar, swapMVar, modifyMVar, readMVar, tryTakeMVar, tryPutMVar)
 import Data.Bifunctor
 import Data.Bifoldable
 import Data.Bitraversable
@@ -192,6 +192,7 @@ type JSContextRef = ()
 data JSContextRef = JSContextRef
   { _jsContextRef_sendReq :: !(TryReq -> IO ())
   , _jsContextRef_sendReqAsync :: !(TryReq -> IO ())
+  , _jsContextRef_sendReqsBatchVar :: !(MVar ())
   , _jsContextRef_syncThreadId :: Maybe (ThreadId)
   , _jsContextRef_nextRefId :: !(TVar RefId)
   , _jsContextRef_nextGetJsonReqId :: !(TVar GetJsonReqId)
@@ -627,13 +628,18 @@ callbackToAsyncFunction callbackId = withJSValOutput_ $ \ref -> do
 lazyValResult :: Ref -> JSM LazyVal
 lazyValResult ref = JSM $ do
   pendingResults <- asks _jsContextRef_pendingResults
+  sendReqsBatchVar <- asks _jsContextRef_sendReqsBatchVar
   liftIO $ do
     refId <- readIORef $ unRef ref
     resultVar <- newEmptyMVar
     atomically $ modifyTVar' pendingResults $ M.insertWith (error "getLazyVal: already waiting for this ref") refId resultVar
     refRef <- newIORef $ Just ref
     resultVal <- unsafeInterleaveIO $ do
-      result <- takeMVar resultVar
+      result <- tryTakeMVar resultVar >>= \case
+        Just r -> pure r
+        Nothing -> do
+          void $ tryPutMVar sendReqsBatchVar ()
+          takeMVar resultVar
       writeIORef refRef Nothing
       return result
     return $ LazyVal

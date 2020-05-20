@@ -197,7 +197,8 @@ jsaddleJs' jsaddleUri refreshOnLoad = jsaddleCoreJs <> "\
     \        ws.onmessage = function(c) {\n\
     \            connId = c.data;\n\
     \            ws.onmessage = function(e) {\n\
-    \                core.processReq(JSON.parse(e.data));\n\
+    \                var reqs = JSON.parse(e.data);\n\
+    \                for (req of reqs) { core.processReq(req); }\n\
     \            };\n\
     \        }\n\
     \    };\n\
