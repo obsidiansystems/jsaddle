@@ -184,7 +184,7 @@ jsaddleJs = jsaddleCoreJs <> ghcjsHelpers <> LBC8.unlines
     , "  }, function(v) {"
     , "    return JSON.parse(window.prompt(\"JSaddleSync\", JSON.stringify(v)));"
     , "  });"
-    , "  return core.processReq;"
+    , "  return core.processReqs;"
     , "})();"
     ]
 

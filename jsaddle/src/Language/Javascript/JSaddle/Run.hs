@@ -44,14 +44,15 @@ module Language.Javascript.JSaddle.Run (
 
 #ifndef ghcjs_HOST_OS
 import Control.Exception (try, SomeException(..))
-import Control.Monad (when, join, void)
+import Control.Monad (when, join, void, unless, forever)
 import Control.Monad.Trans.Reader (runReaderT)
 import Control.Monad.IO.Class (MonadIO(..))
 import Control.Monad.STM (atomically)
-import Control.Concurrent (myThreadId, forkIO)
-import Control.Concurrent.STM.TVar (writeTVar, readTVar, newTVarIO)
+import Control.Concurrent (myThreadId, forkIO, threadDelay)
+import Control.Concurrent.Async (race_)
+import Control.Concurrent.STM.TVar (writeTVar, readTVar, newTVarIO, modifyTVar', readTVarIO)
 import Control.Concurrent.MVar
-       (putMVar, takeMVar, newMVar, newEmptyMVar, modifyMVar, modifyMVar_, swapMVar)
+       (putMVar, takeMVar, newMVar, newEmptyMVar, modifyMVar, modifyMVar_, swapMVar, tryPutMVar)
 
 import Data.Monoid ((<>))
 import Data.Map (Map)
@@ -82,12 +83,25 @@ type CallbackResultId = ValId
 type CallbackResult = JSVal
 
 runJavaScript
-  :: (TryReq -> IO ()) -- ^ Send a request to the JS engine; we assume that requests are performed in the order they are sent; requests received while in a synchronous block must not be processed until the synchronous block ends (i.e. until the JS side receives the final value yielded back from the synchronous block)
+  :: ([TryReq] -> IO ()) -- ^ Send a batch of requests to the JS engine; we assume that requests are performed in the order they are sent; requests received while in a synchronous block must not be processed until the synchronous block ends (i.e. until the JS side receives the final value yielded back from the synchronous block)
   -> IO ( Rsp -> IO () -- Responses must be able to continue coming in as a sync block runs, or else the caller must be careful to ensure that sync blocks are only run after all outstanding responses have been processed
         , SyncCommand -> IO [Either CallbackResultId TryReq]
         , JSContextRef
         )
-runJavaScript sendReqAsync = do
+runJavaScript = runJavaScriptInt (500 {- 0.5 ms -}) 100
+
+runJavaScriptInt
+  :: Int
+  -- ^ Timeout for sending async requests in microseconds
+  -> Int
+  -- ^ Max size of async requests batch size
+  -> ([TryReq] -> IO ())
+  -- ^ See comments for runJavaScript
+  -> IO ( Rsp -> IO ()
+        , SyncCommand -> IO [Either CallbackResultId TryReq]
+        , JSContextRef
+        )
+runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
   nextRefId <- newTVarIO initialRefId
   nextGetJsonReqId <- newTVarIO $ GetJsonReqId 1
   getJsonReqs <- newTVarIO M.empty
@@ -104,6 +118,9 @@ runJavaScript sendReqAsync = do
   syncState <- newMVar SyncState_InSync
   nextSyncReqId <- newTVarIO $ SyncReqId 1
   syncReqs <- newTVarIO mempty
+  sendReqsBatchVar <- newMVar ()
+  pendingReqs <- newTVarIO []
+  pendingReqsCount <- newTVarIO (0 :: Int)
   let enqueueYieldVal val = modifyMVar_ yieldAccumVar $ \old -> do
         let new = val : old
         when (null old) $ do
@@ -181,9 +198,25 @@ runJavaScript sendReqAsync = do
           case mThisSync of
             Nothing -> putStrLn $ "Rsp_Sync: " <> show syncReqId <> " not found"
             Just thisSync -> putMVar thisSync ()
+      sendReqAsync req = do
+        count <- atomically $ do
+          modifyTVar' pendingReqs ((:) req)
+          c <- readTVar pendingReqsCount
+          writeTVar pendingReqsCount (succ c)
+          pure (succ c)
+        when (count > pendingReqsLimit) $ void $ tryPutMVar sendReqsBatchVar ()
+      doSendReqs = forever $ do
+        race_ (threadDelay sendReqsTimeout) (takeMVar sendReqsBatchVar)
+        reqs <- atomically $ do
+          writeTVar pendingReqsCount 0
+          reqs <- readTVar pendingReqs
+          writeTVar pendingReqs []
+          pure $ reverse reqs
+        unless (null reqs) $ sendReqsBatch reqs
       env = JSContextRef
         { _jsContextRef_sendReq = sendReqAsync
         , _jsContextRef_sendReqAsync = sendReqAsync
+        , _jsContextRef_sendReqsBatchVar = sendReqsBatchVar
         , _jsContextRef_syncThreadId = Nothing
         , _jsContextRef_nextRefId = nextRefId
         , _jsContextRef_nextGetJsonReqId = nextGetJsonReqId
@@ -218,6 +251,7 @@ runJavaScript sendReqAsync = do
               yield
             Nothing -> error $ "sync callback " <> show callbackId <> " called, but does not exist"
         SyncCommand_Continue -> yield
+  void $ forkIO doSendReqs
   return (processRsp, processSyncCommand, env)
 
 #endif

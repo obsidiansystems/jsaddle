@@ -142,7 +142,7 @@ jsaddleJs = jsaddleCoreJs <> ghcjsHelpers <> "\n\
     \  }, function(v) {\n\
     \    return JSON.parse(jsaddleCallbacks.syncMessage(JSON.stringify(v)));\n\
     \  });\n\
-    \  return core.processReq;\n\
+    \  return core.processReqs;\n\
     \})();\n\
     \jsaddleCallbacks.postReady();\n"
 
