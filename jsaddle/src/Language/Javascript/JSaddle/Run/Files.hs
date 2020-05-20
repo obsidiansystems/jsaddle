@@ -320,7 +320,8 @@ jsaddleCoreJs = "\
     \    processSingleReq(req);\n\
     \  };\n\
     \  return {\n\
-    \    processReq: processReq\n\
+    \    processReq: processReq,\n\
+    \    processReqs: function(reqs) { for (req of reqs) { processReq(req);}}\n\
     \  };\n\
     \}\n\
     \"
