@@ -709,9 +709,11 @@ getJson' :: JSVal -> JSM (IO A.Value)
 getJson' val = do
   getJsonReqId <- newId _jsContextRef_nextGetJsonReqId
   getJsonReqs <- JSM $ asks _jsContextRef_getJsonReqs
+  sendReqsBatchVar <- JSM $ asks _jsContextRef_sendReqsBatchVar
   resultVar <- JSM $ liftIO $ newEmptyMVar
   JSM $ liftIO $ atomically $ modifyTVar' getJsonReqs $ M.insert getJsonReqId resultVar
   sendReq $ Req_GetJson val getJsonReqId
+  JSM $ liftIO $ void $ tryPutMVar sendReqsBatchVar ()
   return $ takeMVar resultVar
 
 withJSValOutput_ :: (Ref -> JSM ()) -> JSM JSVal
@@ -746,12 +748,14 @@ instance MonadError JSVal JSM where
   catchError a h = do
     tryId <- newId _jsContextRef_nextTryId
     tries <- JSM $ asks _jsContextRef_tries
+    sendReqsBatchVar <- JSM $ asks _jsContextRef_sendReqsBatchVar
     finishVar <- JSM $ liftIO newEmptyMVar
     JSM $ liftIO $ atomically $ modifyTVar' tries $ M.insert tryId finishVar
     env <- JSM ask
     let end = sendReq Req_FinishTry
     tryResult <- JSM $ liftIO $ withAsync (runReaderT (unJSM (a <* end)) $ env { _jsContextRef_myTryId = tryId }) $ \aa -> do
       --IDEA: Continue speculatively executing forward
+      void $ tryPutMVar sendReqsBatchVar ()
       takeMVar finishVar >>= \case
         Left e -> return $ Left e
         Right _ -> Right <$> wait aa
@@ -818,6 +822,7 @@ waitForSync = do
   nextSyncReqId <- JSM $ asks _jsContextRef_nextSyncReqId
   sendReq' <- JSM $ asks _jsContextRef_sendReq
   tid <- JSM $ asks _jsContextRef_myTryId
+  sendReqsBatchVar <- JSM $ asks _jsContextRef_sendReqsBatchVar
   join $ unsafeInlineLiftIO $ modifyMVar syncState $ \old -> case old of
     SyncState_InSync -> return (old, return ())
     SyncState_OutOfSync -> do
@@ -828,6 +833,7 @@ waitForSync = do
         { _tryReq_tryId = tid
         , _tryReq_req = Req_Sync syncReqId
         }
+      void $ tryPutMVar sendReqsBatchVar ()
       return $ (,) (SyncState_WaitingForSync synced) $
         unsafeInlineLiftIO $ readMVar synced
     SyncState_WaitingForSync synced -> do

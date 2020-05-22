@@ -199,7 +199,7 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
             Nothing -> putStrLn $ "Rsp_Sync: " <> show syncReqId <> " not found"
             Just thisSync -> putMVar thisSync ()
       sendReqAsync req = do
-        count <-atomically $ do
+        count <- atomically $ do
           modifyTVar' pendingReqs ((:) req)
           c <- readTVar pendingReqsCount
           writeTVar pendingReqsCount (succ c)
