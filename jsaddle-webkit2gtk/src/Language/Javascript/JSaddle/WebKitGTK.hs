@@ -83,6 +83,12 @@ import Language.Javascript.JSaddle (JSM, Rsp, SyncCommand, ValId, TryReq, SyncBl
 import Language.Javascript.JSaddle.Run (runJavaScript)
 import Language.Javascript.JSaddle.Run.Files (ghcjsHelpers, jsaddleCoreJs)
 
+noAdjustment :: Maybe Adjustment
+noAdjustment = Nothing
+
+noCancellable :: Maybe Cancellable
+noCancellable = Nothing
+
 quitWebView :: WebView -> IO ()
 quitWebView wv = postGUIAsync $ do w <- widgetGetToplevel wv --TODO: Shouldn't this be postGUISync?
                                    widgetDestroy w
