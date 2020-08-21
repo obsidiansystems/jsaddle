@@ -472,6 +472,7 @@ data Req input output
    | Req_Throw input
    | Req_FinishTry
    | Req_Sync SyncReqId
+   | Req_TriggerSendRsp
    deriving (Show, Read, Eq, Generic, Functor, Foldable, Traversable)
 
 instance Bifunctor Req where
@@ -495,6 +496,7 @@ instance Bitraversable Req where
     Req_Throw a -> Req_Throw <$> f a
     Req_FinishTry -> pure Req_FinishTry
     Req_Sync s -> pure $ Req_Sync s
+    Req_TriggerSendRsp -> pure Req_TriggerSendRsp
 
 instance (ToJSON input, ToJSON output) => ToJSON (Req input output) where
   toEncoding = A.genericToEncoding $ aesonOptions "Req"
@@ -628,7 +630,8 @@ callbackToAsyncFunction callbackId = withJSValOutput_ $ \ref -> do
 lazyValResult :: Ref -> JSM LazyVal
 lazyValResult ref = JSM $ do
   pendingResults <- asks _jsContextRef_pendingResults
-  sendReqsBatchVar <- asks _jsContextRef_sendReqsBatchVar
+  !sendReqsBatchVar <- asks _jsContextRef_sendReqsBatchVar
+  !sendReq' <- asks _jsContextRef_sendReq
   liftIO $ do
     refId <- readIORef $ unRef ref
     resultVar <- newEmptyMVar
@@ -638,6 +641,11 @@ lazyValResult ref = JSM $ do
       result <- tryTakeMVar resultVar >>= \case
         Just r -> pure r
         Nothing -> do
+          -- Inform JS side that we are blocked
+          sendReq' TryReq
+            { _tryReq_tryId = TryId 0 -- not relevant
+            , _tryReq_req = Req_TriggerSendRsp
+            }
           void $ tryPutMVar sendReqsBatchVar ()
           takeMVar resultVar
       writeIORef refRef Nothing

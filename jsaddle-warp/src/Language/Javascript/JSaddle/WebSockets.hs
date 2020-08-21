@@ -189,7 +189,7 @@ jsaddleJs' jsaddleUri refreshOnLoad = jsaddleCoreJs <> "\
     \    };\n\
     \    var core = jsaddle(window, function(a) {\n\
     \      ws.send(JSON.stringify(a));\n\
-    \    }, sync);\n\
+    \    }, sync, 10 /* RESPONSE_BUFFER_MAX_SIZE (0 to disable) */);\n\
     \    var syncKey = \"\";\n\
     \\n\
     \    ws.onopen = function(e) {\n\

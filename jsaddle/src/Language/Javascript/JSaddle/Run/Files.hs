@@ -36,7 +36,7 @@ indexHtml =
 -- (on linux, use xsel -bi instead of pbcopy)
 jsaddleCoreJs :: ByteString
 jsaddleCoreJs = "\
-    \function jsaddle(global, sendRsp, processSyncCommand) {\n\
+    \function jsaddle(global, sendRsp, processSyncCommand, RESPONSE_BUFFER_MAX_SIZE) {\n\
     \  /*\n\
     \\n\
     \  Queue.js\n\
@@ -119,6 +119,8 @@ jsaddleCoreJs = "\
     \  /* End Queue.js */\n\
     \\n\
     \  var vals = new Map();\n\
+    \  var responses = [];\n\
+    \  var sendRspScheduled = false;\n\
     \  vals.set(1, global);\n\
     \  var nextValId = -1;\n\
     \  var unwrapVal = function(valId) {\n\
@@ -161,9 +163,33 @@ jsaddleCoreJs = "\
     \  var wrapVal = function(val) {\n\
     \    return wrapValWithDefault(val);\n\
     \  };\n\
+    \  var doSendRsp = function () {\n\
+    \    if (responses.length > 0) {\n\
+    \      sendRsp(responses);\n\
+    \      responses = [];\n\
+    \    }\n\
+    \  };\n\
+    \  var appendRsp = function(rsp) {\n\
+    \    responses.push(rsp);\n\
+    \    if (responses.length >= RESPONSE_BUFFER_MAX_SIZE) {\n\
+    \      doSendRsp();\n\
+    \    } else {\n\
+    \      if (sendRspScheduled === false) {\n\
+    \        sendRspScheduled = true;\n\
+    \        setTimeout(function() {\n\
+    \          sendRspScheduled = false;\n\
+    \          doSendRsp();\n\
+    \        }, 1);\n\
+    \      };\n\
+    \    };\n\
+    \  };\n\
+    \  var sendRspImmediate = function(rsp) {\n\
+    \    responses.push(rsp);\n\
+    \    doSendRsp();\n\
+    \  };\n\
     \  var result = function(ref, val) {\n\
     \    vals.set(ref, val);\n\
-    \    sendRsp({\n\
+    \    appendRsp({\n\
     \      'tag': 'Result',\n\
     \      'contents': [\n\
     \        ref,\n\
@@ -174,13 +200,15 @@ jsaddleCoreJs = "\
     \  var syncRequests = new Queue();\n\
     \  var getNextSyncRequest = function() {\n\
     \    if(syncRequests.isEmpty()) {\n\
+    \      // Make sure all pending responses are sent\n\
+    \      doSendRsp();\n\
     \      syncRequests.enqueueArray(processSyncCommand({\n\
     \        'tag': 'Continue',\n\
     \        'contents': []\n\
     \      }));\n\
     \    }\n\
     \    return syncRequests.dequeue();\n\
-    \  }\n\
+    \  };\n\
     \  var processAllEnqueuedReqs = function() {\n\
     \    while(!syncRequests.isEmpty()) {\n\
     \      var req = syncRequests.dequeue();\n\
@@ -244,7 +272,7 @@ jsaddleCoreJs = "\
     \        result(req.contents[1], req.contents[0]);\n\
     \        break;\n\
     \      case 'GetJson':\n\
-    \        sendRsp({\n\
+    \        sendRspImmediate({\n\
     \          'tag': 'GetJson',\n\
     \          'contents': [\n\
     \            req.contents[1],\n\
@@ -263,7 +291,7 @@ jsaddleCoreJs = "\
     \      case 'NewAsyncCallback':\n\
     \        var callbackId = req.contents[0];\n\
     \        result(req.contents[1], function() {\n\
-    \          sendRsp({\n\
+    \          appendRsp({\n\
     \            'tag': 'CallAsync',\n\
     \            'contents': [\n\
     \              callbackId,\n\
@@ -288,7 +316,7 @@ jsaddleCoreJs = "\
     \      case 'Throw':\n\
     \        throw unwrapVal(req.contents[0]);\n\
     \      case 'FinishTry':\n\
-    \        sendRsp({\n\
+    \        sendRspImmediate({\n\
     \          'tag': 'FinishTry',\n\
     \          'contents': [\n\
     \            tryReq.tryId,\n\
@@ -297,16 +325,19 @@ jsaddleCoreJs = "\
     \        });\n\
     \        break;\n\
     \      case 'Sync':\n\
-    \        sendRsp({\n\
+    \        sendRspImmediate({\n\
     \          'tag': 'Sync',\n\
     \          'contents': req.contents\n\
     \        });\n\
+    \        break;\n\
+    \      case 'TriggerSendRsp':\n\
+    \        doSendRsp();\n\
     \        break;\n\
     \      default:\n\
     \        throw 'processSingleReq: unknown request tag ' + JSON.stringify(req.tag);\n\
     \      }\n\
     \    } catch(e) {\n\
-    \      sendRsp({\n\
+    \      sendRspImmediate({\n\
     \        'tag': 'FinishTry',\n\
     \        'contents': [\n\
     \          tryReq.tryId,\n\
