@@ -1,4 +1,4 @@
-function jsaddle(global, sendRsp, processSyncCommand) {
+function jsaddle(global, sendRsp, processSyncCommand, RESPONSE_BUFFER_MAX_SIZE) {
   /*
 
   Queue.js
@@ -81,6 +81,8 @@ function jsaddle(global, sendRsp, processSyncCommand) {
   /* End Queue.js */
 
   var vals = new Map();
+  var responses = [];
+  var sendRspScheduled = false;
   vals.set(1, global);
   var nextValId = -1;
   var unwrapVal = function(valId) {
@@ -123,9 +125,38 @@ function jsaddle(global, sendRsp, processSyncCommand) {
   var wrapVal = function(val) {
     return wrapValWithDefault(val);
   };
+  var doSendRsp = function () {
+    if (responses.length > 0) {
+      var responses_ = responses;
+      responses = [];
+      sendRsp(responses_);
+    }
+  };
+  var appendRsp = function(rsp) {
+    responses.push(rsp);
+    if (responses.length >= RESPONSE_BUFFER_MAX_SIZE) {
+      doSendRsp();
+    } else {
+      if (sendRspScheduled === false) {
+        sendRspScheduled = true;
+        // Timeout of 0 interferes with batching, and 1 ms is a very high value.
+        // But because we use TriggerSendRsp, this setTimeout is redundant when the jsaddle is active.
+        // Without TriggerSendRsp the performance is bad for 0 and terribly bad for 1 ms.
+        // This is useful only when jsaddle is idle, and its desirable to clear the response pipeline.
+        setTimeout(function() {
+          sendRspScheduled = false;
+          doSendRsp();
+        }, 1);
+      };
+    };
+  };
+  var sendRspImmediate = function(rsp) {
+    responses.push(rsp);
+    doSendRsp();
+  };
   var result = function(ref, val) {
     vals.set(ref, val);
-    sendRsp({
+    appendRsp({
       'tag': 'Result',
       'contents': [
         ref,
@@ -136,13 +167,15 @@ function jsaddle(global, sendRsp, processSyncCommand) {
   var syncRequests = new Queue();
   var getNextSyncRequest = function() {
     if(syncRequests.isEmpty()) {
+      // Make sure all pending responses are sent
+      doSendRsp();
       syncRequests.enqueueArray(processSyncCommand({
         'tag': 'Continue',
         'contents': []
       }));
     }
     return syncRequests.dequeue();
-  }
+  };
   var processAllEnqueuedReqs = function() {
     while(!syncRequests.isEmpty()) {
       var req = syncRequests.dequeue();
@@ -154,6 +187,8 @@ function jsaddle(global, sendRsp, processSyncCommand) {
   };
   var syncDepth = 0;
   var runSyncCallback = function(callback, that, args) {
+    // Make sure all pending responses are sent
+    doSendRsp();
     syncDepth++;
     syncRequests.enqueueArray(processSyncCommand({
       'tag': 'StartCallback',
@@ -206,7 +241,7 @@ function jsaddle(global, sendRsp, processSyncCommand) {
         result(req.contents[1], req.contents[0]);
         break;
       case 'GetJson':
-        sendRsp({
+        sendRspImmediate({
           'tag': 'GetJson',
           'contents': [
             req.contents[1],
@@ -225,7 +260,7 @@ function jsaddle(global, sendRsp, processSyncCommand) {
       case 'NewAsyncCallback':
         var callbackId = req.contents[0];
         result(req.contents[1], function() {
-          sendRsp({
+          appendRsp({
             'tag': 'CallAsync',
             'contents': [
               callbackId,
@@ -250,7 +285,7 @@ function jsaddle(global, sendRsp, processSyncCommand) {
       case 'Throw':
         throw unwrapVal(req.contents[0]);
       case 'FinishTry':
-        sendRsp({
+        sendRspImmediate({
           'tag': 'FinishTry',
           'contents': [
             tryReq.tryId,
@@ -259,16 +294,19 @@ function jsaddle(global, sendRsp, processSyncCommand) {
         });
         break;
       case 'Sync':
-        sendRsp({
+        sendRspImmediate({
           'tag': 'Sync',
           'contents': req.contents
         });
+        break;
+      case 'TriggerSendRsp':
+        doSendRsp();
         break;
       default:
         throw 'processSingleReq: unknown request tag ' + JSON.stringify(req.tag);
       }
     } catch(e) {
-      sendRsp({
+      sendRspImmediate({
         'tag': 'FinishTry',
         'contents': [
           tryReq.tryId,

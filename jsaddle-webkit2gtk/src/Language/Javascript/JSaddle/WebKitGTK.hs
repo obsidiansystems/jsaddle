@@ -150,7 +150,7 @@ connectUserContentManagerScriptMessageReceived obj cb after = liftIO $ do
       Nothing
 #endif
 
-addJSaddleHandler :: WebView -> (Rsp -> IO ()) -> (SyncCommand -> IO [Either ValId TryReq]) -> IO ()
+addJSaddleHandler :: WebView -> ([Rsp] -> IO ()) -> (SyncCommand -> IO [Either ValId TryReq]) -> IO ()
 addJSaddleHandler webView processResult processSyncCommand = do
     manager <- webViewGetUserContentManager webView
     _ <- onUserContentManagerScriptMessageReceived manager $ \result -> do
@@ -183,7 +183,7 @@ jsaddleJs = jsaddleCoreJs <> ghcjsHelpers <> LBC8.unlines
     , "    window.webkit.messageHandlers.jsaddle.postMessage(JSON.stringify(req));"
     , "  }, function(v) {"
     , "    return JSON.parse(window.prompt(\"JSaddleSync\", JSON.stringify(v)));"
-    , "  });"
+    , "  }, 10);"
     , "  return core.processReqs;"
     , "})();"
     ]
