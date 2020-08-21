@@ -62,7 +62,7 @@ import Data.IORef (newIORef)
 
 import Language.Javascript.JSaddle.Types
 --TODO: Handle JS exceptions
-import Data.Foldable (forM_)
+import Data.Foldable (forM_, traverse_)
 import System.IO.Unsafe
 import Language.Javascript.JSaddle.Monad (syncPoint)
 
@@ -84,7 +84,7 @@ type CallbackResult = JSVal
 
 runJavaScript
   :: ([TryReq] -> IO ()) -- ^ Send a batch of requests to the JS engine; we assume that requests are performed in the order they are sent; requests received while in a synchronous block must not be processed until the synchronous block ends (i.e. until the JS side receives the final value yielded back from the synchronous block)
-  -> IO ( Rsp -> IO () -- Responses must be able to continue coming in as a sync block runs, or else the caller must be careful to ensure that sync blocks are only run after all outstanding responses have been processed
+  -> IO ( [Rsp] -> IO () -- Responses must be able to continue coming in as a sync block runs, or else the caller must be careful to ensure that sync blocks are only run after all outstanding responses have been processed
         , SyncCommand -> IO [Either CallbackResultId TryReq]
         , JSContextRef
         )
@@ -97,7 +97,7 @@ runJavaScriptInt
   -- ^ Max size of async requests batch size
   -> ([TryReq] -> IO ())
   -- ^ See comments for runJavaScript
-  -> IO ( Rsp -> IO ()
+  -> IO ( [Rsp] -> IO ()
         , SyncCommand -> IO [Either CallbackResultId TryReq]
         , JSContextRef
         )
@@ -153,7 +153,7 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
       yield = do
         takeMVar yieldReadyVar
         reverse <$> swapMVar yieldAccumVar []
-      processRsp = \case
+      processRsp = traverse_ $ \case
         Rsp_GetJson getJsonReqId val -> do
           reqs <- atomically $ do
             reqs <- readTVar getJsonReqs
