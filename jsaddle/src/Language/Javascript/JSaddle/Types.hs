@@ -758,18 +758,28 @@ instance MonadError JSVal JSM where
     tries <- JSM $ asks _jsContextRef_tries
     sendReqsBatchVar <- JSM $ asks _jsContextRef_sendReqsBatchVar
     finishVar <- JSM $ liftIO newEmptyMVar
+    asyncExceptionVar <- JSM $ liftIO newEmptyMVar
     JSM $ liftIO $ atomically $ modifyTVar' tries $ M.insert tryId finishVar
     env <- JSM ask
     let end = sendReq Req_FinishTry
-    tryResult <- JSM $ liftIO $ withAsync (runReaderT (unJSM (a <* end)) $ env { _jsContextRef_myTryId = tryId }) $ \aa -> do
+        action = (runReaderT (unJSM (a <* end)) $ env { _jsContextRef_myTryId = tryId })
+          `catch` (\e@(SomeException _) -> do
+                      putMVar asyncExceptionVar e
+                      throwIO e)
+    tryResult <- JSM $ liftIO $ withAsync action $ \aa -> do
       --IDEA: Continue speculatively executing forward
       void $ tryPutMVar sendReqsBatchVar ()
-      takeMVar finishVar >>= \case
-        Left e -> return $ Left e
-        Right _ -> Right <$> wait aa
+      -- XXX we can miss async exception due to race with JavaScriptException
+      race
+        (takeMVar asyncExceptionVar)
+        (takeMVar finishVar >>= \case
+          Left e -> cancel aa >> return (Left e)
+          Right _ -> Right <$> wait aa)
     case tryResult of
-      Left e -> h e
-      Right result -> return result
+      Left someException -> unsafeInlineLiftIO $ throwIO someException
+      Right finishRes -> case finishRes of
+        Left e -> h e
+        Right res -> pure res
   throwError e = do
     sendReq $ Req_Throw e --IDEA: Short-circuit this rather than actually sending it to the JS side
     JSM $ liftIO $ forever $ threadDelay maxBound
