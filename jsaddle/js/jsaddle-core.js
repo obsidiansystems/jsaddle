@@ -223,7 +223,7 @@ function jsaddle(global, sendRsp, processSyncCommand, RESPONSE_BUFFER_MAX_SIZE) 
   var processSingleReq = function(tryReq) {
     // Ignore requests in dead tries
     if(deadTries.has(tryReq.tryId)) {
-      if(req.tag === 'FinishTry') {
+      if(tryReq.req.tag === 'FinishTry') {
         // FinishTry must be the last req in the try, so we no longer need to
         // keep this around
         deadTries.delete(tryReq.tryId);
@@ -306,6 +306,7 @@ function jsaddle(global, sendRsp, processSyncCommand, RESPONSE_BUFFER_MAX_SIZE) 
         throw 'processSingleReq: unknown request tag ' + JSON.stringify(req.tag);
       }
     } catch(e) {
+      deadTries.set(tryReq.tryId, true);
       sendRspImmediate({
         'tag': 'FinishTry',
         'contents': [
