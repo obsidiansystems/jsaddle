@@ -146,61 +146,43 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
               newDepth threadId runningThreads
         return (newDepth, readyFrames, newRunningThreads)
       exitSyncFrame :: SyncFrameDepth -> (Either SomeException CallbackResult) ->  IO ()
-      exitSyncFrame myDepth callbackResult = modifyMVar_ syncCallbackState $ \(oldDepth, oldReadyFrames, oldRunningThreads) -> case oldDepth `compare` myDepth of
-        LT -> do
-          -- error "should be impossible: trying to return from deeper sync frame than the current depth"
-          -- This can happen
-          putStrLn $ "LT: " <> (show myDepth)
-          pure (oldDepth, oldReadyFrames, oldRunningThreads)
-        -- We're the top frame, so yield our value to the caller
-        EQ -> case callbackResult of
-          Right myRetVal -> do
-            putStrLn $ "EQ: Right " <> (show myDepth)
-            let yieldAllReady :: SyncFrameDepth -> Map SyncFrameDepth CallbackResult
-                  -> Map SyncFrameDepth ThreadId -> CallbackResult
-                  -> IO (SyncFrameDepth, Map SyncFrameDepth CallbackResult, Map SyncFrameDepth ThreadId)
-                yieldAllReady depth readyFrames runningThreads retVal = do
-                  -- Even though the valId is escaping, this is safe because we know that our yielded value will go out before any potential FreeVal request could go out
-                  flip runReaderT env $ unJSM $ withJSValId retVal $ \retValId -> do
-                    JSM $ liftIO $ enqueueYieldVal (depth, SyncBlockReq_Result retValId)
-                  let !nextDepth = pred depth
-                      !nextRunningThreads = M.delete depth runningThreads
-                  case M.maxViewWithKey readyFrames of
-                    -- The parent frame is also ready to yield
-                    Just ((k, nextRetVal), nextReadyFrames)
-                      | k == nextDepth
-                        -> yieldAllReady nextDepth nextReadyFrames nextRunningThreads nextRetVal
-                    _ -> return (nextDepth, readyFrames, nextRunningThreads)
-            yieldAllReady oldDepth oldReadyFrames oldRunningThreads myRetVal
-          Left someException -> do
-            putStrLn $ "EQ: Left " <> (show myDepth)
-            let !newRunningThreads = M.delete myDepth oldRunningThreads
-            let !newReadyFrames = M.delete myDepth oldReadyFrames
-            wasEmpty <- modifyMVar yieldAccumVar $ \old -> do
-              -- Drop all pending requests of current frames.
-              -- And throw
-              let !new = (filter ((< pred myDepth) . fst) old) ++
-                     map (\d -> (d, SyncBlockReq_Throw d (T.pack $ show someException))) [myDepth .. maxDepth]
-                  -- We may have pending Result for frames above us,
-                  -- and we should throw on them in top to bottom order
-                  !maxDepth = case old of
-                    [] -> myDepth
-                    _ -> maximum (map fst old)
-              printSyncBlockReqs "EQ: Left old" old
-              printSyncBlockReqs "EQ: Left new" new
-              return (new, null old)
-            when wasEmpty $ putMVar yieldReadyVar ()
-            pure (pred myDepth, newReadyFrames, newRunningThreads)
-        -- We're not the top frame, so just store our value so it can be yielded later
-        -- In case of exception, kill all running threads and yield the exception
-        GT -> case callbackResult of
-          Right myRetVal -> do
-            putStrLn $ "GT: Right " <> (show myDepth)
-            let !newReadyFrames = M.insertWith (error "should be impossible: trying to return from a sync frame that has already returned") myDepth myRetVal oldReadyFrames
-                !newRunningThreads = M.delete myDepth oldRunningThreads
-            return (oldDepth, newReadyFrames, newRunningThreads)
-          Left someException -> do
-            putStrLn $ "GT: Left " <> (show myDepth)
+      exitSyncFrame myDepth callbackResult = modifyMVar_ syncCallbackState $ \(oldDepth, oldReadyFrames, oldRunningThreads) -> case callbackResult of
+        Right myRetVal -> case oldDepth `compare` myDepth of
+          LT -> error "should be impossible: trying to return from deeper sync frame than the current depth"
+          -- We're the top frame, so yield our value to the caller
+          EQ -> do
+              putStrLn $ "EQ: Right " <> (show myDepth)
+              let yieldAllReady :: SyncFrameDepth -> Map SyncFrameDepth CallbackResult
+                    -> Map SyncFrameDepth ThreadId -> CallbackResult
+                    -> IO (SyncFrameDepth, Map SyncFrameDepth CallbackResult, Map SyncFrameDepth ThreadId)
+                  yieldAllReady depth readyFrames runningThreads retVal = do
+                    -- Even though the valId is escaping, this is safe because we know that our yielded value will go out before any potential FreeVal request could go out
+                    flip runReaderT env $ unJSM $ withJSValId retVal $ \retValId -> do
+                      JSM $ liftIO $ enqueueYieldVal (depth, SyncBlockReq_Result retValId)
+                    let !nextDepth = pred depth
+                        !nextRunningThreads = M.delete depth runningThreads
+                    case M.maxViewWithKey readyFrames of
+                      -- The parent frame is also ready to yield
+                      Just ((k, nextRetVal), nextReadyFrames)
+                        | k == nextDepth
+                          -> yieldAllReady nextDepth nextReadyFrames nextRunningThreads nextRetVal
+                      _ -> return (nextDepth, readyFrames, nextRunningThreads)
+              yieldAllReady oldDepth oldReadyFrames oldRunningThreads myRetVal
+          -- We're not the top frame, so just store our value so it can be yielded later
+          -- In case of exception, kill all running threads and yield the exception
+          GT -> case callbackResult of
+            Right myRetVal -> do
+              putStrLn $ "GT: Right " <> (show (myDepth, oldDepth))
+              let !newReadyFrames = M.insertWith (error "should be impossible: trying to return from a sync frame that has already returned") myDepth myRetVal oldReadyFrames
+                  !newRunningThreads = M.delete myDepth oldRunningThreads
+              return (oldDepth, newReadyFrames, newRunningThreads)
+        Left someException -> case oldDepth `compare` myDepth of
+          LT -> do
+            -- This can happen when the thread is killed, ignore
+            putStrLn $ "LT: " <> (show myDepth)
+            pure (oldDepth, oldReadyFrames, oldRunningThreads)
+          _ -> do -- EQ and GT
+            putStrLn $ "Left : " <> (show (myDepth, oldDepth)) <> " : " <> show someException
             let (!newRunningThreads, toKill) = M.split myDepth oldRunningThreads
             let (!newReadyFrames, _) = M.split myDepth oldReadyFrames
             wasEmpty <- modifyMVar yieldAccumVar $ \old -> do
@@ -215,8 +197,8 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
                   !maxDepth = case old of
                     [] -> myDepth
                     _ -> maximum (map fst old)
-              printSyncBlockReqs "GT: Left old" old
-              printSyncBlockReqs "GT: Left new" new
+              printSyncBlockReqs "old" old
+              printSyncBlockReqs "new" new
               return (new, null old)
             when wasEmpty $ putMVar yieldReadyVar ()
             pure (pred myDepth, newReadyFrames, newRunningThreads)
