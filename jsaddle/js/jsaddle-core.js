@@ -297,6 +297,7 @@ function jsaddle(global, sendRsp, processSyncCommand, RESPONSE_BUFFER_MAX_SIZE) 
         throw 'processSingleReq: unknown request tag ' + JSON.stringify(req.tag);
       }
     } catch(e) {
+      deadTries.set(tryReq.tryId, true);
       sendRspImmediate({
         'tag': 'FinishTry',
         'contents': [

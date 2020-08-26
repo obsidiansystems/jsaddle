@@ -335,6 +335,7 @@ jsaddleCoreJs = "\
     \        throw 'processSingleReq: unknown request tag ' + JSON.stringify(req.tag);\n\
     \      }\n\
     \    } catch(e) {\n\
+    \      deadTries.set(tryReq.tryId, true);\n\
     \      sendRspImmediate({\n\
     \        'tag': 'FinishTry',\n\
     \        'contents': [\n\
