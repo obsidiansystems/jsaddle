@@ -170,12 +170,11 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
               yieldAllReady oldDepth oldReadyFrames oldRunningThreads myRetVal
           -- We're not the top frame, so just store our value so it can be yielded later
           -- In case of exception, kill all running threads and yield the exception
-          GT -> case callbackResult of
-            Right myRetVal -> do
-              putStrLn $ "GT: Right " <> (show (myDepth, oldDepth))
-              let !newReadyFrames = M.insertWith (error "should be impossible: trying to return from a sync frame that has already returned") myDepth myRetVal oldReadyFrames
-                  !newRunningThreads = M.delete myDepth oldRunningThreads
-              return (oldDepth, newReadyFrames, newRunningThreads)
+          GT -> do
+            putStrLn $ "GT: Right " <> (show (myDepth, oldDepth))
+            let !newReadyFrames = M.insertWith (error "should be impossible: trying to return from a sync frame that has already returned") myDepth myRetVal oldReadyFrames
+                !newRunningThreads = M.delete myDepth oldRunningThreads
+            return (oldDepth, newReadyFrames, newRunningThreads)
         Left someException -> case oldDepth `compare` myDepth of
           LT -> do
             -- This can happen when the thread is killed, ignore
@@ -190,7 +189,7 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
               -- doing this after taking lock over yieldAccumVar
               -- For Haskell, kill all threads
               mapM_ killThread (M.elems toKill)
-              -- Drop all pending requests of current and frames above ours
+              -- Drop all pending requests of frames pred, current and above ours
               -- And throw on all frames starting from top
               let !new = (filter ((< pred myDepth) . fst) old) ++
                      map (\d -> (d, SyncBlockReq_Throw d (T.pack $ show someException))) [myDepth .. maxDepth]
@@ -300,7 +299,7 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
                                   , _jsContextRef_syncState = syncStateLocal }
                 res <- try $ flip runReaderT syncEnv $ unJSM $
                   (join $ callback <$> wrapJSVal this <*> traverse wrapJSVal args)
-                    `catchError` (\v -> unsafePerformIO $
+                    `catchError` (\v -> unsafeInlineLiftIO $
                                    putStrLn "JavaScriptException happened in sync callback" >> throwIO (JavaScriptException v))
                 putStrLn $ "end of inSyncFrame: " <> (show myDepth) <> (either show (const "") res)
                 pure res
