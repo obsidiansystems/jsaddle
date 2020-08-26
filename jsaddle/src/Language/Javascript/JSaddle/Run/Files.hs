@@ -254,7 +254,7 @@ jsaddleCoreJs = "\
     \  var processSingleReq = function(tryReq) {\n\
     \    // Ignore requests in dead tries\n\
     \    if(deadTries.has(tryReq.tryId)) {\n\
-    \      if(req.tag === 'FinishTry') {\n\
+    \      if(tryReq.req.tag === 'FinishTry') {\n\
     \        // FinishTry must be the last req in the try, so we no longer need to\n\
     \        // keep this around\n\
     \        deadTries.delete(tryReq.tryId);\n\
@@ -337,6 +337,7 @@ jsaddleCoreJs = "\
     \        throw 'processSingleReq: unknown request tag ' + JSON.stringify(req.tag);\n\
     \      }\n\
     \    } catch(e) {\n\
+    \      deadTries.set(tryReq.tryId, true);\n\
     \      sendRspImmediate({\n\
     \        'tag': 'FinishTry',\n\
     \        'contents': [\n\
