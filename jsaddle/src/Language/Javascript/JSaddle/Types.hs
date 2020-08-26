@@ -85,6 +85,10 @@ module Language.Javascript.JSaddle.Types (
   , getLazyVal
   , Rsp (..)
   , SyncCommand (..)
+  , SyncBlockReq (..)
+  , SyncFrameDepth (..)
+  , CallbackResultId
+  , CallbackResult
   , CallbackId (..)
   , GetJsonReqId (..)
   , SyncReqId (..)
@@ -127,7 +131,7 @@ import GHCJS.Prim.Internal
 import Data.JSString.Internal.Type (JSString(..))
 import Data.Monoid
 import Control.Concurrent (myThreadId, ThreadId, threadDelay)
-import Control.Exception (Exception, throwIO)
+import Control.Exception (Exception, throwIO, SomeException(..))
 import Control.Monad (void)
 import Control.Monad.Catch (MonadThrow, MonadCatch(..), MonadMask(..), bracket_)
 import Control.Monad.Except
@@ -146,12 +150,13 @@ import Control.Monad.Trans.Writer.Lazy as Lazy (WriterT(..))
 import Control.Monad.Trans.Writer.Strict as Strict (WriterT(..))
 import Control.Monad.Trans.Class (MonadTrans(..))
 import Control.Monad.Fix (MonadFix)
-import Control.Concurrent.Async (withAsync, wait)
+import Control.Concurrent.Async (withAsync, wait, cancel, race)
 import Control.Concurrent.STM.TVar (TVar)
 import Control.Concurrent.MVar (MVar, swapMVar, modifyMVar, readMVar, tryTakeMVar, tryPutMVar)
 import Data.Bifunctor
 import Data.Bifoldable
 import Data.Bitraversable
+import Data.Text (Text)
 import Data.Typeable (Typeable)
 import Data.Coerce (coerce, Coercible)
 import Data.Aeson (ToJSON(..), FromJSON(..))
@@ -529,6 +534,25 @@ instance ToJSON SyncCommand where
 
 instance FromJSON SyncCommand where
   parseJSON = A.genericParseJSON $ aesonOptions "SyncCommand"
+
+newtype SyncFrameDepth = SyncFrameDepth Int
+  deriving (Show, Read, Eq, Ord, Enum, ToJSON, FromJSON)
+
+type CallbackResultId = ValId
+
+type CallbackResult = JSVal
+
+data SyncBlockReq
+  = SyncBlockReq_Req TryReq
+  | SyncBlockReq_Result CallbackResultId
+  | SyncBlockReq_Throw SyncFrameDepth Text
+   deriving (Generic)
+
+instance ToJSON SyncBlockReq where
+  toEncoding = A.genericToEncoding $ aesonOptions "SyncBlockReq"
+
+instance FromJSON SyncBlockReq where
+  parseJSON = A.genericParseJSON $ aesonOptions "SyncBlockReq"
 
 data TryReq = TryReq
   { _tryReq_tryId :: TryId
