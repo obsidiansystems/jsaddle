@@ -147,7 +147,7 @@ import Control.Monad.Trans.Writer.Strict as Strict (WriterT(..))
 import Control.Monad.Trans.Class (MonadTrans(..))
 import Control.Monad.Fix (MonadFix)
 import Control.Concurrent.Async (withAsync, wait, race, cancel, AsyncCancelled)
-import Control.Concurrent.STM.TVar (TVar)
+import Control.Concurrent.STM.TVar (TVar, newTVarIO, modifyTVar', readTVarIO)
 import Control.Concurrent.MVar (MVar, swapMVar, modifyMVar, readMVar, tryTakeMVar, tryPutMVar)
 import Data.Bifunctor
 import Data.Bifoldable
@@ -206,6 +206,8 @@ data JSContextRef = JSContextRef
   , _jsContextRef_syncState :: !(MVar SyncState)
   , _jsContextRef_nextSyncReqId :: !(TVar SyncReqId)
   , _jsContextRef_syncReqs :: !(TVar (Map SyncReqId (MVar ())))
+  -- When executing in a sync frame, wait for results of these
+  , _jsContextRef_waitForResults :: !(Maybe (TVar [JSVal]))
   }
 #endif
 
@@ -368,6 +370,7 @@ runJSM a ctx = liftIO $ do
                 then ctx
                 else ctx {
                     _jsContextRef_syncThreadId = Nothing,
+                    _jsContextRef_waitForResults = Nothing,
                     _jsContextRef_sendReq = _jsContextRef_sendReqAsync ctx }
   result <- flip runReaderT ctx' $ unJSM $ do
     catchError (Right <$> a) (return . Left)  -- <* waitForSync
@@ -744,8 +747,14 @@ setProperty prop val obj = do
   sendReq $ Req_SetProperty prop val obj
 
 callAsFunction' :: JSVal -> JSVal -> [JSVal] -> JSM JSVal
-callAsFunction' f this args = withJSValOutput_ $ \ref -> do
-  sendReq $ Req_CallAsFunction f this args ref
+callAsFunction' f this args = do
+  res <- withJSValOutput_ $ \ref -> do
+    sendReq $ Req_CallAsFunction f this args ref
+  JSM $ (asks _jsContextRef_waitForResults >>=) $ mapM_ $ \tVar ->
+    -- This call can start a new sync-frame, so wait for its results in the current try block
+    liftIO $ atomically $ modifyTVar' tVar ((:) res)
+  pure res
+
 
 callAsConstructor' :: JSVal -> [JSVal] -> JSM JSVal
 callAsConstructor' f args = withJSValOutput_ $ \ref -> do
@@ -760,9 +769,24 @@ instance MonadError JSVal JSM where
     finishVar <- JSM $ liftIO newEmptyMVar
     asyncExceptionVar <- JSM $ liftIO newEmptyMVar
     JSM $ liftIO $ atomically $ modifyTVar' tries $ M.insert tryId finishVar
-    env <- JSM ask
-    let end = sendReq Req_FinishTry
-        action = (runReaderT (unJSM (a <* end)) $ env { _jsContextRef_myTryId = tryId })
+    env <- JSM $ do
+      oldEnv <- ask
+      let newEnv = oldEnv { _jsContextRef_myTryId = tryId }
+      case _jsContextRef_syncThreadId oldEnv of
+        Nothing -> pure newEnv
+        Just _ -> do
+          v <- liftIO $ newTVarIO []
+          pure $ newEnv { _jsContextRef_waitForResults = Just v }
+    let end = do
+          JSM $ (asks _jsContextRef_waitForResults >>=) $ mapM_ $ \tVar -> do
+              vars <- liftIO $ readTVarIO tVar
+              -- wait for results of these
+              mapM_ (\jsVal -> case getPrimJSVal jsVal of
+                       PrimVal_Undefined -> pure ()
+                       _ -> pure ()
+                   ) vars
+          sendReq Req_FinishTry
+        action = (runReaderT (unJSM (a <* end)) env)
           `catch` (\e@(SomeException _) -> do
                       case fromException e of
                         Just (_ :: AsyncCancelled) -> pure ()
