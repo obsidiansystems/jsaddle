@@ -86,6 +86,7 @@ module Language.Javascript.JSaddle.Types (
   , getLazyVal
   , Rsp (..)
   , SyncCommand (..)
+  , SyncBlockReq (..)
   , CallbackId (..)
   , GetJsonReqId (..)
   , SyncReqId (..)
@@ -153,6 +154,7 @@ import Control.Concurrent.MVar (MVar, swapMVar, modifyMVar, readMVar, tryTakeMVa
 import Data.Bifunctor
 import Data.Bifoldable
 import Data.Bitraversable
+import Data.Text (Text)
 import Data.Typeable (Typeable)
 import Data.Coerce (coerce, Coercible)
 import Data.Aeson (ToJSON(..), FromJSON(..))
@@ -539,6 +541,18 @@ instance ToJSON SyncCommand where
 
 instance FromJSON SyncCommand where
   parseJSON = A.genericParseJSON $ aesonOptions "SyncCommand"
+
+data SyncBlockReq
+  = SyncBlockReq_Req TryReq
+  | SyncBlockReq_Result ValId
+  | SyncBlockReq_Throw Int Text
+   deriving (Generic)
+
+instance ToJSON SyncBlockReq where
+  toEncoding = A.genericToEncoding $ aesonOptions "SyncBlockReq"
+
+instance FromJSON SyncBlockReq where
+  parseJSON = A.genericParseJSON $ aesonOptions "SyncBlockReq"
 
 data TryReq = TryReq
   { _tryReq_tryId :: TryId
