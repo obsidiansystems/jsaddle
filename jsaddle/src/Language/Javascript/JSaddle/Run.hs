@@ -121,11 +121,11 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
   sendReqsBatchVar <- newMVar ()
   pendingReqs <- newTVarIO []
   pendingReqsCount <- newTVarIO (0 :: Int)
-  let enqueueYieldVal val = modifyMVar_ yieldAccumVar $ \old -> do
-        let new = val : old
-        when (null old) $ do
-          putMVar yieldReadyVar ()
-        return new
+  let enqueueYieldVal val = do
+        wasEmpty <- modifyMVar yieldAccumVar $ \old -> do
+          let !new = val : old
+          return (new, null old)
+        when wasEmpty $ putMVar yieldReadyVar ()
       enterSyncFrame = modifyMVar syncCallbackState $ \(oldDepth, readyFrames) -> do
         let !newDepth = succ oldDepth
         return ((newDepth, readyFrames), newDepth)
