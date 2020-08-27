@@ -43,8 +43,9 @@ module Language.Javascript.JSaddle.Run (
 ) where
 
 #ifndef ghcjs_HOST_OS
-import Control.Exception (try, SomeException(..))
+import Control.Exception (try, SomeException(..), throwIO)
 import Control.Monad (when, join, void, unless, forever)
+import Control.Monad.Except (catchError)
 import Control.Monad.Trans.Reader (runReaderT)
 import Control.Monad.IO.Class (MonadIO(..))
 import Control.Monad.STM (atomically)
@@ -59,6 +60,7 @@ import Data.Map (Map)
 import Data.Maybe
 import qualified Data.Map as M
 import Data.IORef (newIORef)
+import qualified Data.Text as T
 
 import Language.Javascript.JSaddle.Types
 --TODO: Handle JS exceptions
@@ -78,14 +80,12 @@ globalRef = unsafePerformIO $ Ref <$> newIORef globalRefId
 initialRefId :: RefId
 initialRefId = RefId 2
 
-type CallbackResultId = ValId
-
-type CallbackResult = JSVal
+type CallbackResult = Either SomeException JSVal
 
 runJavaScript
   :: ([TryReq] -> IO ()) -- ^ Send a batch of requests to the JS engine; we assume that requests are performed in the order they are sent; requests received while in a synchronous block must not be processed until the synchronous block ends (i.e. until the JS side receives the final value yielded back from the synchronous block)
   -> IO ( [Rsp] -> IO () -- Responses must be able to continue coming in as a sync block runs, or else the caller must be careful to ensure that sync blocks are only run after all outstanding responses have been processed
-        , SyncCommand -> IO [Either CallbackResultId TryReq]
+        , SyncCommand -> IO [SyncBlockReq]
         , JSContextRef
         )
   -- These default have been determined to give good results on jsaddle-warp
@@ -100,7 +100,7 @@ runJavaScriptInt
   -> ([TryReq] -> IO ())
   -- ^ See comments for runJavaScript
   -> IO ( [Rsp] -> IO ()
-        , SyncCommand -> IO [Either CallbackResultId TryReq]
+        , SyncCommand -> IO [SyncBlockReq]
         , JSContextRef
         )
 runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
@@ -131,6 +131,7 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
       enterSyncFrame = modifyMVar syncCallbackState $ \(oldDepth, readyFrames) -> do
         let !newDepth = succ oldDepth
         return ((newDepth, readyFrames), newDepth)
+      exitSyncFrame :: Int -> CallbackResult -> IO ()
       exitSyncFrame myDepth myRetVal = modifyMVar_ syncCallbackState $ \(oldDepth, oldReadyFrames) -> case oldDepth `compare` myDepth of
         LT -> error "should be impossible: trying to return from deeper sync frame than the current depth"
         -- We're the top frame, so yield our value to the caller
@@ -138,8 +139,10 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
           let yieldAllReady :: Int -> Map Int CallbackResult -> CallbackResult -> IO (Int, Map Int CallbackResult)
               yieldAllReady depth readyFrames retVal = do
                 -- Even though the valId is escaping, this is safe because we know that our yielded value will go out before any potential FreeVal request could go out
-                flip runReaderT env $ unJSM $ withJSValId retVal $ \retValId -> do
-                  JSM $ liftIO $ enqueueYieldVal $ Left retValId
+                case retVal of
+                  Left e -> enqueueYieldVal $ (depth, SyncBlockReq_Throw depth (T.pack $ show e))
+                  Right v -> flip runReaderT env $ unJSM $ withJSValId v $ \retValId -> do
+                    JSM $ liftIO $ enqueueYieldVal $ (depth, SyncBlockReq_Result retValId)
                 let !nextDepth = pred depth
                 case M.maxViewWithKey readyFrames of
                   -- The parent frame is also ready to yield
@@ -154,7 +157,7 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
           return (oldDepth, newReadyFrames)
       yield = do
         takeMVar yieldReadyVar
-        reverse <$> swapMVar yieldAccumVar []
+        reverse . (map snd) <$> swapMVar yieldAccumVar []
       processRsp = traverse_ $ \case
         Rsp_GetJson getJsonReqId val -> do
           reqs <- atomically $ do
@@ -241,16 +244,16 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
             Just (callback :: JSVal -> [JSVal] -> JSM JSVal) -> do
               myDepth <- enterSyncFrame
               _ <- forkIO $ do
-                _ :: Either SomeException () <- try $ do
-                  threadId <- myThreadId
-                  syncStateLocal <- newMVar SyncState_InSync
-                  let syncEnv = env { _jsContextRef_sendReq = enqueueYieldVal . Right
-                                    , _jsContextRef_syncThreadId = Just threadId
-                                    , _jsContextRef_syncState = syncStateLocal }
-                  result <- flip runReaderT syncEnv $ unJSM $
-                    join $ callback <$> wrapJSVal this <*> traverse wrapJSVal args --TODO: Handle exceptions that occur within the callback
-                  exitSyncFrame myDepth result
-                return ()
+                threadId <- myThreadId
+                syncStateLocal <- newMVar SyncState_InSync
+                let syncEnv = env { _jsContextRef_sendReq = \req -> enqueueYieldVal (myDepth, SyncBlockReq_Req req)
+                                  , _jsContextRef_syncThreadId = Just threadId
+                                  , _jsContextRef_syncState = syncStateLocal }
+                result <- try $ flip runReaderT syncEnv $ unJSM $
+                  (join $ callback <$> wrapJSVal this <*> traverse wrapJSVal args)
+                    `catchError` (\v -> unsafeInlineLiftIO $
+                                   putStrLn "JavaScriptException happened in sync callback" >> throwIO (JavaScriptException v))
+                exitSyncFrame myDepth result
               yield
             Nothing -> error $ "sync callback " <> show callbackId <> " called, but does not exist"
         SyncCommand_Continue -> yield

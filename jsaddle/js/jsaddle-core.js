@@ -178,11 +178,11 @@ function jsaddle(global, sendRsp, processSyncCommand, RESPONSE_BUFFER_MAX_SIZE) 
   };
   var processAllEnqueuedReqs = function() {
     while(!syncRequests.isEmpty()) {
-      var req = syncRequests.dequeue();
-      if(!req.Right) {
-        throw "processAllEnqueuedReqs: req is not Right; this should never happen because Lefts should only be sent while a synchronous request is still in progress";
+      var syncReq = syncRequests.dequeue();
+      if(syncReq.tag !== 'Req') {
+        throw "processAllEnqueuedReqs: syncReq is not SyncBlockReq_Req; this should never happen because Result/Throw should only be sent while a synchronous request is still in progress";
       }
-      processSingleReq(req.Right);
+      processSingleReq(syncReq.contents);
     }
   };
   var syncDepth = 0;
@@ -199,10 +199,12 @@ function jsaddle(global, sendRsp, processSyncCommand, RESPONSE_BUFFER_MAX_SIZE) 
       ]
     }));
     while(true) {
-      var rsp = getNextSyncRequest();
-      if(rsp.Right) {
-        processSingleReq(rsp.Right);
-      } else {
+      var syncReq = getNextSyncRequest();
+      switch (syncReq.tag) {
+      case 'Req':
+        processSingleReq(syncReq.contents);
+        break;
+      case 'Result':
         syncDepth--;
         if(syncDepth === 0 && !syncRequests.isEmpty()) {
           // Ensure that all remaining sync requests are cleared out in a timely
@@ -215,7 +217,15 @@ function jsaddle(global, sendRsp, processSyncCommand, RESPONSE_BUFFER_MAX_SIZE) 
           // returning first, it won't be available
           setTimeout(processAllEnqueuedReqs, 0);
         }
-        return rsp.Left;
+        return syncReq.contents[0];
+      case 'Throw':
+        // Ensure we are throwing at the right depth
+        if (syncDepth !== syncReq.contents[0]) {
+          console.error("Received throw for wrong syncDepth: ", syncDepth, syncReq.contents[0]);
+          continue;
+        };
+        syncDepth--;
+        throw syncReq.contents[1];
       }
     }
   };

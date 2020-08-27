@@ -216,11 +216,11 @@ jsaddleCoreJs = "\
     \  };\n\
     \  var processAllEnqueuedReqs = function() {\n\
     \    while(!syncRequests.isEmpty()) {\n\
-    \      var req = syncRequests.dequeue();\n\
-    \      if(!req.Right) {\n\
-    \        throw \"processAllEnqueuedReqs: req is not Right; this should never happen because Lefts should only be sent while a synchronous request is still in progress\";\n\
+    \      var syncReq = syncRequests.dequeue();\n\
+    \      if(syncReq.tag !== 'Req') {\n\
+    \        throw \"processAllEnqueuedReqs: syncReq is not SyncBlockReq_Req; this should never happen because Result/Throw should only be sent while a synchronous request is still in progress\";\n\
     \      }\n\
-    \      processSingleReq(req.Right);\n\
+    \      processSingleReq(syncReq.contents);\n\
     \    }\n\
     \  };\n\
     \  var syncDepth = 0;\n\
@@ -237,10 +237,12 @@ jsaddleCoreJs = "\
     \      ]\n\
     \    }));\n\
     \    while(true) {\n\
-    \      var rsp = getNextSyncRequest();\n\
-    \      if(rsp.Right) {\n\
-    \        processSingleReq(rsp.Right);\n\
-    \      } else {\n\
+    \      var syncReq = getNextSyncRequest();\n\
+    \      switch (syncReq.tag) {\n\
+    \      case 'Req':\n\
+    \        processSingleReq(syncReq.contents);\n\
+    \        break;\n\
+    \      case 'Result':\n\
     \        syncDepth--;\n\
     \        if(syncDepth === 0 && !syncRequests.isEmpty()) {\n\
     \          // Ensure that all remaining sync requests are cleared out in a timely\n\
@@ -253,7 +255,15 @@ jsaddleCoreJs = "\
     \          // returning first, it won't be available\n\
     \          setTimeout(processAllEnqueuedReqs, 0);\n\
     \        }\n\
-    \        return rsp.Left;\n\
+    \        return syncReq.contents[0];\n\
+    \      case 'Throw':\n\
+    \        // Ensure we are throwing at the right depth\n\
+    \        if (syncDepth !== syncReq.contents[0]) {\n\
+    \          console.error(\"Received throw for wrong syncDepth: \", syncDepth, syncReq.contents[0]);\n\
+    \          continue;\n\
+    \        };\n\
+    \        syncDepth--;\n\
+    \        throw syncReq.contents[1];\n\
     \      }\n\
     \    }\n\
     \  };\n\
