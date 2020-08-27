@@ -232,6 +232,7 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
         , _jsContextRef_syncState = syncState
         , _jsContextRef_nextSyncReqId = nextSyncReqId
         , _jsContextRef_syncReqs = syncReqs
+        , _jsContextRef_waitForResults = Nothing
         }
       processSyncCommand = \case
         SyncCommand_StartCallback callbackId this args -> do
