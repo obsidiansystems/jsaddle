@@ -121,6 +121,8 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
   sendReqsBatchVar <- newMVar ()
   pendingReqs <- newTVarIO []
   pendingReqsCount <- newTVarIO (0 :: Int)
+  myThreadId' <- myThreadId
+  childTryIdTVar <- newTVarIO Nothing
   let enqueueYieldVal val = do
         wasEmpty <- modifyMVar yieldAccumVar $ \old -> do
           let !new = val : old
@@ -227,6 +229,8 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
         , _jsContextRef_nextTryId = nextTryId
         , _jsContextRef_tries = tries
         , _jsContextRef_myTryId = TryId 0 --TODO
+        , _jsContextRef_myThreadId = myThreadId'
+        , _jsContextRef_childTryIdTVar = childTryIdTVar
         , _jsContextRef_syncState = syncState
         , _jsContextRef_nextSyncReqId = nextSyncReqId
         , _jsContextRef_syncReqs = syncReqs
@@ -242,8 +246,11 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
                 _ :: Either SomeException () <- try $ do
                   threadId <- myThreadId
                   syncStateLocal <- newMVar SyncState_InSync
+                  newChildTryIdTVar <- newTVarIO Nothing
                   let syncEnv = env { _jsContextRef_sendReq = enqueueYieldVal . Right
                                     , _jsContextRef_syncThreadId = Just threadId
+                                    , _jsContextRef_myThreadId = threadId
+                                    , _jsContextRef_childTryIdTVar = newChildTryIdTVar
                                     , _jsContextRef_syncState = syncStateLocal }
                   result <- flip runReaderT syncEnv $ unJSM $
                     join $ callback <$> wrapJSVal this <*> traverse wrapJSVal args --TODO: Handle exceptions that occur within the callback

@@ -21,6 +21,7 @@
 {-# LANGUAGE LambdaCase                 #-}
 {-# LANGUAGE MultiParamTypeClasses      #-}
 {-# LANGUAGE ScopedTypeVariables        #-}
+{-# LANGUAGE OverloadedStrings          #-}
 {-# OPTIONS_GHC -Wno-warnings-deprecations      #-}
 -----------------------------------------------------------------------------
 --
@@ -203,6 +204,8 @@ data JSContextRef = JSContextRef
   , _jsContextRef_nextTryId :: !(TVar TryId)
   , _jsContextRef_tries :: !(TVar (Map TryId (MVar (Either JSVal ()))))
   , _jsContextRef_myTryId :: !TryId
+  , _jsContextRef_myThreadId :: !(ThreadId)
+  , _jsContextRef_childTryIdTVar :: !(TVar (Maybe TryId))
   , _jsContextRef_syncState :: !(MVar SyncState)
   , _jsContextRef_nextSyncReqId :: !(TVar SyncReqId)
   , _jsContextRef_syncReqs :: !(TVar (Map SyncReqId (MVar ())))
@@ -366,12 +369,16 @@ runJSM = const . liftIO
 #else
 runJSM a ctx = liftIO $ do
   threadId <- myThreadId
-  let ctx' = if _jsContextRef_syncThreadId ctx == Just threadId
-                then ctx
-                else ctx {
-                    _jsContextRef_syncThreadId = Nothing,
-                    _jsContextRef_waitForResults = Nothing,
-                    _jsContextRef_sendReq = _jsContextRef_sendReqAsync ctx }
+  ctx' <- if _jsContextRef_myThreadId ctx == threadId
+    then pure ctx
+    else do
+      newChildTryIdTVar <- newTVarIO Nothing
+      pure $ ctx {
+        _jsContextRef_myThreadId = threadId,
+        _jsContextRef_syncThreadId = Nothing,
+        _jsContextRef_waitForResults = Nothing,
+        _jsContextRef_childTryIdTVar = newChildTryIdTVar,
+        _jsContextRef_sendReq = _jsContextRef_sendReqAsync ctx }
   result <- flip runReaderT ctx' $ unJSM $ do
     catchError (Right <$> a) (return . Left)  -- <* waitForSync
   either (throwIO . JavaScriptException) return result
@@ -766,12 +773,17 @@ instance MonadError JSVal JSM where
     tryId <- newId _jsContextRef_nextTryId
     tries <- JSM $ asks _jsContextRef_tries
     sendReqsBatchVar <- JSM $ asks _jsContextRef_sendReqsBatchVar
+    childTryIdTVar <- JSM $ asks _jsContextRef_childTryIdTVar
+    newChildTryIdTVar <- JSM $ liftIO $ newTVarIO Nothing
     finishVar <- JSM $ liftIO newEmptyMVar
     asyncExceptionVar <- JSM $ liftIO newEmptyMVar
     JSM $ liftIO $ atomically $ modifyTVar' tries $ M.insert tryId finishVar
     env <- JSM $ do
       oldEnv <- ask
-      let newEnv = oldEnv { _jsContextRef_myTryId = tryId }
+      let newEnv = oldEnv
+            { _jsContextRef_myTryId = tryId
+            , _jsContextRef_childTryIdTVar = newChildTryIdTVar
+            }
       case _jsContextRef_syncThreadId oldEnv of
         Nothing -> pure newEnv
         Just _ -> do
@@ -788,19 +800,36 @@ instance MonadError JSVal JSM where
           sendReq Req_FinishTry
         action = (runReaderT (unJSM (a <* end)) env)
           `catch` (\e@(SomeException _) -> do
+                      killChild
                       case fromException e of
                         Just (_ :: AsyncCancelled) -> pure ()
                         Nothing -> putMVar asyncExceptionVar e
                       throwIO e)
+        killChild = do
+          mChildTryId <- readTVarIO newChildTryIdTVar
+          forM_ mChildTryId $ \childTryId -> do
+            mChildTryMVar <- atomically $ do
+              currentTries <- readTVar tries
+              writeTVar tries $! M.delete childTryId currentTries
+              return $ M.lookup childTryId currentTries
+            forM_ mChildTryMVar $ \v ->
+              putMVar v $ Left $ primToJSVal $ PrimVal_String "Parent Try received an exception."
+
     tryResult <- JSM $ liftIO $ withAsync action $ \aa -> do
       --IDEA: Continue speculatively executing forward
       void $ tryPutMVar sendReqsBatchVar ()
+      -- Set the childTryIdVar for the parent, so that if the parent dies, this try
+      -- recieves the finishVar Left
+      liftIO $ atomically $ modifyTVar' childTryIdTVar $ \case
+        Just _ -> error "childTryIdTVar already has a try in it"
+        Nothing -> Just tryId
       -- XXX we can miss async exception due to race with JavaScriptException
       race
         (takeMVar asyncExceptionVar)
         (takeMVar finishVar >>= \case
-          Left e -> cancel aa >> return (Left e)
+          Left e -> killChild >> cancel aa >> return (Left e)
           Right _ -> Right <$> wait aa)
+    liftIO $ atomically $ modifyTVar' childTryIdTVar (const Nothing)
     case tryResult of
       Left someException -> unsafeInlineLiftIO $ throwIO someException
       Right finishRes -> case finishRes of
