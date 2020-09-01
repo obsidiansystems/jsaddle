@@ -218,7 +218,8 @@ jsaddleCoreJs = "\
     \        throw \"processAllEnqueuedReqs: syncReq is not SyncBlockReq_Req; this should never happen because Result/Throw should only be sent while a synchronous request is still in progress\";\n\
     \      }\n\
     \      if (tuple[0] > syncDepth) {\n\
-    \        throw \"processAllEnqueuedReqs: queue contains a request for a frame which has exited\";\n\
+    \        console.warn (\"processAllEnqueuedReqs: queue contains a request for a frame which has exited\");\n\
+    \        continue;\n\
     \      }\n\
     \      processSingleReq(syncReq.contents);\n\
     \    }\n\
@@ -233,7 +234,33 @@ jsaddleCoreJs = "\
     \        args\n\
     \      ]\n\
     \    });\n\
-    \    syncRequests.enqueueArray(newReqs);\n\
+    \    var minThrowFrame = syncDepth + 1;\n\
+    \    var throwReqs = [];\n\
+    \    var otherReqs = [];\n\
+    \    for (var i = 0; i < newReqs.length; ++i) {\n\
+    \      var tuple = newReqs[i];\n\
+    \      var syncReq = tuple[1];\n\
+    \      if (syncReq.tag === 'Throw') {\n\
+    \        minThrowFrame = Math.min(minThrowFrame, tuple[0]);\n\
+    \        throwReqs.push(tuple);\n\
+    \      } else {\n\
+    \        otherReqs.push(tuple);\n\
+    \      }\n\
+    \    }\n\
+    \    if (minThrowFrame < (syncDepth + 1)) {\n\
+    \      var existingValidReqs = [];\n\
+    \      while(!syncRequests.isEmpty()) {\n\
+    \        var tuple = syncRequests.dequeue();\n\
+    \        if ((tuple[0] < minThrowFrame) || (tuple[1].tag === 'Throw')) {\n\
+    \          existingValidReqs.push(tuple);\n\
+    \        }\n\
+    \      }\n\
+    \      syncRequests.enqueueArray(throwReqs);\n\
+    \      syncRequests.enqueueArray(existingValidReqs);\n\
+    \      syncRequests.enqueueArray(otherReqs);\n\
+    \    } else {\n\
+    \      syncRequests.enqueueArray(newReqs);\n\
+    \    }\n\
     \    while(true) {\n\
     \      var tuple = getNextSyncRequest();\n\
     \      var syncReq = tuple[1];\n\
@@ -257,8 +284,12 @@ jsaddleCoreJs = "\
     \        return syncReq.contents[0];\n\
     \      case 'Throw':\n\
     \        // Ensure we are throwing at the right depth\n\
-    \        if (syncDepth !== syncReq.contents[0]) {\n\
-    \          console.error(\"Received throw for wrong syncDepth: \", syncDepth, syncReq.contents[0]);\n\
+    \        if (syncDepth < syncReq.contents[0]) {\n\
+    \          console.warn(\"Received throw for higher syncDepth: \", syncDepth, syncReq.contents[0]);\n\
+    \          continue;\n\
+    \        };\n\
+    \        if (syncDepth > syncReq.contents[0]) {\n\
+    \          console.error(\"Received throw for lower syncDepth: \", syncDepth, syncReq.contents[0]);\n\
     \          continue;\n\
     \        };\n\
     \        syncDepth--;\n\
