@@ -176,30 +176,37 @@ function jsaddle(global, sendRsp, processSyncCommand, RESPONSE_BUFFER_MAX_SIZE) 
     }
     return syncRequests.dequeue();
   };
+  var syncDepth = 0;
   var processAllEnqueuedReqs = function() {
     while(!syncRequests.isEmpty()) {
-      var syncReq = syncRequests.dequeue();
+      var tuple = syncRequests.dequeue();
+      var syncReq = tuple[1];
       if(syncReq.tag !== 'Req') {
         throw "processAllEnqueuedReqs: syncReq is not SyncBlockReq_Req; this should never happen because Result/Throw should only be sent while a synchronous request is still in progress";
+      }
+      if (tuple[0] > syncDepth) {
+        console.warn ("processAllEnqueuedReqs: queue contains a request for a frame which has exited");
+        continue;
       }
       processSingleReq(syncReq.contents);
     }
   };
-  var syncDepth = 0;
   var runSyncCallback = function(callback, that, args) {
     // Make sure all pending responses are sent
     doSendRsp();
     syncDepth++;
-    syncRequests.enqueueArray(processSyncCommand({
+    var newReqs = processSyncCommand({
       'tag': 'StartCallback',
       'contents': [
         callback,
         that,
         args
       ]
-    }));
+    });
+    syncRequests.enqueueArray(newReqs);
     while(true) {
-      var syncReq = getNextSyncRequest();
+      var tuple = getNextSyncRequest();
+      var syncReq = tuple[1];
       switch (syncReq.tag) {
       case 'Req':
         processSingleReq(syncReq.contents);

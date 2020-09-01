@@ -150,7 +150,7 @@ connectUserContentManagerScriptMessageReceived obj cb after = liftIO $ do
       Nothing
 #endif
 
-addJSaddleHandler :: WebView -> ([Rsp] -> IO ()) -> (SyncCommand -> IO [SyncBlockReq]) -> IO ()
+addJSaddleHandler :: WebView -> ([Rsp] -> IO ()) -> (SyncCommand -> IO [(Int, SyncBlockReq)]) -> IO ()
 addJSaddleHandler webView processResult processSyncCommand = do
     manager <- webViewGetUserContentManager webView
     _ <- onUserContentManagerScriptMessageReceived manager $ \result -> do
