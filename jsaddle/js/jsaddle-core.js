@@ -203,7 +203,9 @@ function jsaddle(global, sendRsp, processSyncCommand, RESPONSE_BUFFER_MAX_SIZE) 
         args
       ]
     });
-    syncRequests.enqueueArray(newReqs);
+    if (newReqs.length > 0) {
+      syncRequests.enqueueArray(newReqs);
+    }
     while(true) {
       var tuple = getNextSyncRequest();
       var syncReq = tuple[1];

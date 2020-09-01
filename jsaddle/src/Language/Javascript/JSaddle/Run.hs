@@ -64,7 +64,7 @@ import qualified Data.Text as T
 
 import Language.Javascript.JSaddle.Types
 --TODO: Handle JS exceptions
-import Data.Foldable (forM_, traverse_)
+import Data.Foldable (forM_, traverse_, foldl')
 import System.IO.Unsafe
 import Language.Javascript.JSaddle.Monad (syncPoint)
 
@@ -123,14 +123,30 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
   sendReqsBatchVar <- newMVar ()
   pendingReqs <- newTVarIO []
   pendingReqsCount <- newTVarIO (0 :: Int)
-  let enqueueYieldVal val = do
+  let enqueueSyncBlockRequest depth req = do
         wasEmpty <- modifyMVar yieldAccumVar $ \old -> do
-          let !new = val : old
+          let !new = (depth, SyncBlockReq_Req req) : old
           return (new, null old)
         when wasEmpty $ putMVar yieldReadyVar ()
-      enterSyncFrame = modifyMVar syncCallbackState $ \(oldDepth, readyFrames) -> do
-        let !newDepth = succ oldDepth
-        return ((newDepth, readyFrames), newDepth)
+      tryEnterSyncFrame :: (Int -> IO CallbackResult) -> IO [(Int, SyncBlockReq)]
+      tryEnterSyncFrame startNewFrame = modifyMVar syncCallbackState $ \(oldDepth, readyFrames) -> modifyMVar yieldAccumVar $ \old -> do
+        let
+          isThrow req = case req of
+            SyncBlockReq_Throw _ _ -> True
+            _ -> False
+          -- If we have a throw on a lower frame, then the new frame should not be started
+          -- Need to do throw immediately on the new frame
+          startingNewFrame = not $ any isThrow $ M.elems readyFrames
+          -- these are sent immediately
+          new
+            | not startingNewFrame =
+              (succ oldDepth, SyncBlockReq_Throw (succ oldDepth) ("AsyncCancelled: Lower frame has exception")) : (reverse old)
+            | otherwise = reverse old
+          !newDepth = if startingNewFrame then succ oldDepth else oldDepth
+        when startingNewFrame $ void $ forkIO $ do
+          exitSyncFrame newDepth =<< startNewFrame newDepth
+        when (not (null old)) $ takeMVar yieldReadyVar
+        return ([], ((newDepth, readyFrames), new))
       exitSyncFrame :: Int -> CallbackResult -> IO ()
       exitSyncFrame myDepth myRetVal = modifyMVar_ syncCallbackState $ \(oldDepth, oldReadyFrames) -> case oldDepth `compare` myDepth of
         LT -> error "should be impossible: trying to return from deeper sync frame than the current depth"
@@ -241,20 +257,16 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
         SyncCommand_StartCallback callbackId this args -> do
           mCallback <- fmap (M.lookup callbackId) $ atomically $ readTVar callbacks
           case mCallback of
-            Just (callback :: JSVal -> [JSVal] -> JSM JSVal) -> do
-              myDepth <- enterSyncFrame
-              _ <- forkIO $ do
-                threadId <- myThreadId
-                syncStateLocal <- newMVar SyncState_InSync
-                let syncEnv = env { _jsContextRef_sendReq = \req -> enqueueYieldVal (myDepth, SyncBlockReq_Req req)
-                                  , _jsContextRef_syncThreadId = Just threadId
-                                  , _jsContextRef_syncState = syncStateLocal }
-                result <- try $ flip runReaderT syncEnv $ unJSM $
-                  (join $ callback <$> wrapJSVal this <*> traverse wrapJSVal args)
-                    `catchError` (\v -> unsafeInlineLiftIO $
-                                   putStrLn "JavaScriptException happened in sync callback" >> throwIO (JavaScriptException v))
-                exitSyncFrame myDepth result
-              yieldRequests
+            Just (callback :: JSVal -> [JSVal] -> JSM JSVal) -> tryEnterSyncFrame $ \myDepth -> do
+              threadId <- myThreadId
+              syncStateLocal <- newMVar SyncState_InSync
+              let syncEnv = env { _jsContextRef_sendReq = enqueueSyncBlockRequest myDepth
+                                , _jsContextRef_syncThreadId = Just threadId
+                                , _jsContextRef_syncState = syncStateLocal }
+              try $ flip runReaderT syncEnv $ unJSM $
+                (join $ callback <$> wrapJSVal this <*> traverse wrapJSVal args)
+                  `catchError` (\v -> unsafeInlineLiftIO $
+                                 putStrLn "JavaScriptException happened in sync callback" >> throwIO (JavaScriptException v))
             Nothing -> error $ "sync callback " <> show callbackId <> " called, but does not exist"
         SyncCommand_Continue -> go
           where
