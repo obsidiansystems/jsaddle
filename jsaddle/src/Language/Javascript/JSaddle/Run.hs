@@ -136,13 +136,9 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
         LT -> error "should be impossible: trying to return from deeper sync frame than the current depth"
         -- We're the top frame, so yield our value to the caller
         EQ -> do
-          let yieldAllReady :: Int -> Map Int CallbackResult -> CallbackResult -> IO (Int, Map Int CallbackResult)
-              yieldAllReady depth readyFrames retVal = do
-                -- Even though the valId is escaping, this is safe because we know that our yielded value will go out before any potential FreeVal request could go out
-                case retVal of
-                  Left e -> enqueueYieldVal $ (depth, SyncBlockReq_Throw depth (T.pack $ show e))
-                  Right v -> flip runReaderT env $ unJSM $ withJSValId v $ \retValId -> do
-                    JSM $ liftIO $ enqueueYieldVal $ (depth, SyncBlockReq_Result retValId)
+          let yieldAllReady :: Int -> Map Int SyncBlockReq -> SyncBlockReq -> IO (Int, Map Int SyncBlockReq)
+              yieldAllReady depth readyFrames syncBlockReq = do
+                enqueueYieldVal $ (depth, syncBlockReq)
                 let !nextDepth = pred depth
                 case M.maxViewWithKey readyFrames of
                   -- The parent frame is also ready to yield
@@ -150,11 +146,20 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
                     | k == nextDepth
                       -> yieldAllReady nextDepth nextReadyFrames nextRetVal
                   _ -> return (nextDepth, readyFrames)
-          yieldAllReady oldDepth oldReadyFrames myRetVal
+          mySyncBlockReq <- getSyncBlockReqForResult myDepth myRetVal
+          yieldAllReady oldDepth oldReadyFrames mySyncBlockReq
         -- We're not the top frame, so just store our value so it can be yielded later
         GT -> do
-          let !newReadyFrames = M.insertWith (error "should be impossible: trying to return from a sync frame that has already returned") myDepth myRetVal oldReadyFrames
+          !syncBlockReq <- getSyncBlockReqForResult myDepth myRetVal
+          let !newReadyFrames = M.insertWith (error "should be impossible: trying to return from a sync frame that has already returned") myDepth syncBlockReq oldReadyFrames
           return (oldDepth, newReadyFrames)
+      -- Even though the valId is escaping, this is safe because we know that our yielded value will go out before any potential FreeVal request could go out
+      -- The FreeVal request will be done async after all sync frames.
+      getSyncBlockReqForResult :: Int -> CallbackResult -> IO SyncBlockReq
+      getSyncBlockReqForResult depth = \case
+        Left e -> pure $ SyncBlockReq_Throw depth (T.pack $ show e)
+        Right v -> flip runReaderT env $ unJSM $ withJSValId v $ \retValId -> do
+          pure $ SyncBlockReq_Result retValId
       yield = do
         takeMVar yieldReadyVar
         reverse . (map snd) <$> swapMVar yieldAccumVar []
