@@ -85,7 +85,7 @@ type CallbackResult = Either SomeException JSVal
 runJavaScript
   :: ([TryReq] -> IO ()) -- ^ Send a batch of requests to the JS engine; we assume that requests are performed in the order they are sent; requests received while in a synchronous block must not be processed until the synchronous block ends (i.e. until the JS side receives the final value yielded back from the synchronous block)
   -> IO ( [Rsp] -> IO () -- Responses must be able to continue coming in as a sync block runs, or else the caller must be careful to ensure that sync blocks are only run after all outstanding responses have been processed
-        , SyncCommand -> IO [SyncBlockReq]
+        , SyncCommand -> IO [(Int, SyncBlockReq)]
         , JSContextRef
         )
 runJavaScript = runJavaScriptInt (500 {- 0.5 ms -}) 100
@@ -98,7 +98,7 @@ runJavaScriptInt
   -> ([TryReq] -> IO ())
   -- ^ See comments for runJavaScript
   -> IO ( [Rsp] -> IO ()
-        , SyncCommand -> IO [SyncBlockReq]
+        , SyncCommand -> IO [(Int, SyncBlockReq)]
         , JSContextRef
         )
 runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
@@ -128,7 +128,7 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
           let !new = val : old
           return (new, null old)
         when wasEmpty $ putMVar yieldReadyVar ()
-      tryEnterSyncFrame :: (Int -> IO CallbackResult) -> IO [SyncBlockReq]
+      tryEnterSyncFrame :: (Int -> IO CallbackResult) -> IO [(Int, SyncBlockReq)]
       tryEnterSyncFrame startNewFrame = modifyMVar syncCallbackState $ \(oldDepth, readyFrames) -> modifyMVar yieldAccumVar $ \oldSyncBlockReqs -> do
         let
           getResults (d, req) = case req of
@@ -158,7 +158,7 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
         when startingNewFrame $ void $ forkIO $ do
           exitSyncFrame newDepth =<< startNewFrame newDepth
         when (not (null oldSyncBlockReqs)) $ takeMVar yieldReadyVar
-        return (([]), ((newDepth, newReadyFrames), map snd newSyncBlockReqs))
+        return (([]), ((newDepth, newReadyFrames), newSyncBlockReqs))
       exitSyncFrame :: Int -> CallbackResult -> IO ()
       exitSyncFrame myDepth = \case
         Right myRetVal -> modifyMVar_ syncCallbackState $ \(oldDepth, oldReadyFrames) -> case oldDepth `compare` myDepth of
@@ -207,7 +207,7 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
         pure $ SyncBlockReq_Result retValId
       yield = do
         takeMVar yieldReadyVar
-        reverse . (map snd) <$> swapMVar yieldAccumVar []
+        reverse <$> swapMVar yieldAccumVar []
       processRsp = traverse_ $ \case
         Rsp_GetJson getJsonReqId val -> do
           reqs <- atomically $ do
