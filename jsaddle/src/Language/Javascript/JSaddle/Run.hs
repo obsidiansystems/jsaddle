@@ -64,7 +64,7 @@ import qualified Data.Text as T
 
 import Language.Javascript.JSaddle.Types
 --TODO: Handle JS exceptions
-import Data.Foldable (forM_, traverse_)
+import Data.Foldable (forM_, traverse_, foldl')
 import System.IO.Unsafe
 import Language.Javascript.JSaddle.Monad (syncPoint)
 
@@ -128,9 +128,37 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
           let !new = val : old
           return (new, null old)
         when wasEmpty $ putMVar yieldReadyVar ()
-      enterSyncFrame = modifyMVar syncCallbackState $ \(oldDepth, readyFrames) -> do
-        let !newDepth = succ oldDepth
-        return ((newDepth, readyFrames), newDepth)
+      tryEnterSyncFrame :: (Int -> IO CallbackResult) -> IO [SyncBlockReq]
+      tryEnterSyncFrame startNewFrame = modifyMVar syncCallbackState $ \(oldDepth, readyFrames) -> modifyMVar yieldAccumVar $ \oldSyncBlockReqs -> do
+        let
+          getResults (d, req) = case req of
+            SyncBlockReq_Result _ -> Just (d, req)
+            _ -> Nothing
+          isThrow req = case req of
+            SyncBlockReq_Throw _ _ -> True
+            _ -> False
+          isReq req = case req of
+            SyncBlockReq_Req _ -> True
+            _ -> False
+          -- If we have a throw on the oldDepth, then the new frame cannot be started
+          -- Need to do throw immediately on the new frame in addition to the oldDepth
+          startingNewFrame = null $ filter (isThrow . snd) $ oldSyncBlockReqs
+          oldResults = mapMaybe getResults oldSyncBlockReqs
+          -- these are sent immediately
+          newSyncBlockReqs
+            | not startingNewFrame = (succ oldDepth, SyncBlockReq_Throw (succ oldDepth) ("AsyncCancelled: Lower frame has exception")) : (reverse oldSyncBlockReqs)
+            | not (null oldResults) = filter (isReq . snd) $ oldSyncBlockReqs
+            | otherwise = reverse $ oldSyncBlockReqs
+          !newDepth = if startingNewFrame then succ oldDepth else oldDepth
+          -- If we have a pending Result, then we cannot send it now
+          -- Need to put it back in readyFrames
+          newReadyFrames = if startingNewFrame && not (null oldResults)
+            then foldl' (\m (d, r) -> M.insert d r m) readyFrames oldResults
+            else readyFrames
+        when startingNewFrame $ void $ forkIO $ do
+          exitSyncFrame newDepth =<< startNewFrame newDepth
+        when (not (null oldSyncBlockReqs)) $ takeMVar yieldReadyVar
+        return (([]), ((newDepth, newReadyFrames), map snd newSyncBlockReqs))
       exitSyncFrame :: Int -> CallbackResult -> IO ()
       exitSyncFrame myDepth = \case
         Right myRetVal -> modifyMVar_ syncCallbackState $ \(oldDepth, oldReadyFrames) -> case oldDepth `compare` myDepth of
@@ -266,8 +294,7 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
           mCallback <- fmap (M.lookup callbackId) $ atomically $ readTVar callbacks
           case mCallback of
             Just (callback :: JSVal -> [JSVal] -> JSM JSVal) -> do
-              myDepth <- enterSyncFrame
-              _ <- forkIO $ do
+              reqs <- tryEnterSyncFrame $ \myDepth -> do
                 threadId <- myThreadId
                 syncStateLocal <- newMVar SyncState_InSync
                 newChildTryIdTVar <- newTVarIO Nothing
@@ -276,12 +303,13 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
                                   , _jsContextRef_myThreadId = threadId
                                   , _jsContextRef_childTryIdTVar = newChildTryIdTVar
                                   , _jsContextRef_syncState = syncStateLocal }
-                result <- try $ flip runReaderT syncEnv $ unJSM $
+                try $ flip runReaderT syncEnv $ unJSM $
                   (join $ callback <$> wrapJSVal this <*> traverse wrapJSVal args)
                     `catchError` (\v -> unsafeInlineLiftIO $
                                    putStrLn "JavaScriptException happened in sync callback" >> throwIO (JavaScriptException v))
-                exitSyncFrame myDepth result
-              yield
+              case reqs of
+                [] -> yield
+                _ -> pure reqs
             Nothing -> error $ "sync callback " <> show callbackId <> " called, but does not exist"
         SyncCommand_Continue -> yield
   void $ forkIO doSendReqs
