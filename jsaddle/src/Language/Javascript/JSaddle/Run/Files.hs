@@ -209,28 +209,34 @@ jsaddleCoreJs = "\
     \    }\n\
     \    return syncRequests.dequeue();\n\
     \  };\n\
+    \  var syncDepth = 0;\n\
     \  var processAllEnqueuedReqs = function() {\n\
     \    while(!syncRequests.isEmpty()) {\n\
-    \      var syncReq = syncRequests.dequeue();\n\
+    \      var tuple = syncRequests.dequeue();\n\
+    \      var syncReq = tuple[1];\n\
     \      if(syncReq.tag !== 'Req') {\n\
     \        throw \"processAllEnqueuedReqs: syncReq is not SyncBlockReq_Req; this should never happen because Result/Throw should only be sent while a synchronous request is still in progress\";\n\
+    \      }\n\
+    \      if (tuple[0] > syncDepth) {\n\
+    \        throw \"processAllEnqueuedReqs: queue contains a request for a frame which has exited\";\n\
     \      }\n\
     \      processSingleReq(syncReq.contents);\n\
     \    }\n\
     \  };\n\
-    \  var syncDepth = 0;\n\
     \  var runSyncCallback = function(callback, that, args) {\n\
     \    syncDepth++;\n\
-    \    syncRequests.enqueueArray(processSyncCommand({\n\
+    \    var newReqs = processSyncCommand({\n\
     \      'tag': 'StartCallback',\n\
     \      'contents': [\n\
     \        callback,\n\
     \        that,\n\
     \        args\n\
     \      ]\n\
-    \    }));\n\
+    \    });\n\
+    \    syncRequests.enqueueArray(newReqs);\n\
     \    while(true) {\n\
-    \      var syncReq = getNextSyncRequest();\n\
+    \      var tuple = getNextSyncRequest();\n\
+    \      var syncReq = tuple[1];\n\
     \      switch (syncReq.tag) {\n\
     \      case 'Req':\n\
     \        processSingleReq(syncReq.contents);\n\
