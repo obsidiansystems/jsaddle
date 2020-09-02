@@ -125,9 +125,9 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
   pendingReqsCount <- newTVarIO (0 :: Int)
   myThreadId' <- myThreadId
   childTryIdTVar <- newTVarIO Nothing
-  let enqueueYieldVal val = do
+  let enqueueSyncBlockRequest depth req = do
         wasEmpty <- modifyMVar yieldAccumVar $ \old -> do
-          let !new = val : old
+          let !new = (depth, SyncBlockReq_Req req) : old
           return (new, null old)
         when wasEmpty $ putMVar yieldReadyVar ()
       tryEnterSyncFrame :: (Int -> MVar TryId -> IO CallbackResult) -> IO [(Int, SyncBlockReq)]
@@ -284,7 +284,7 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
               threadId <- myThreadId
               syncStateLocal <- newMVar SyncState_InSync
               newChildTryIdTVar <- newTVarIO Nothing
-              let syncEnv = env { _jsContextRef_sendReq = \req -> enqueueYieldVal (myDepth, SyncBlockReq_Req req)
+              let syncEnv = env { _jsContextRef_sendReq = enqueueSyncBlockRequest myDepth
                                 , _jsContextRef_syncThreadId = Just threadId
                                 , _jsContextRef_myThreadId = threadId
                                 , _jsContextRef_childTryIdTVar = newChildTryIdTVar
