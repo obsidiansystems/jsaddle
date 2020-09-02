@@ -161,7 +161,13 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
         LT -> error "should be impossible: trying to return from deeper sync frame than the current depth"
         -- Just store our value so it can be yielded later
         _ -> do
-          !syncBlockReq <- getSyncBlockReqForResult myDepth myRetVal
+          !syncBlockReq <- case myRetVal of
+            Left e -> pure $ SyncBlockReq_Throw myDepth (T.pack $ show e)
+            -- Even though the valId is escaping, this is safe because we know that our yielded value will
+            -- go out before any potential FreeVal request could go out
+            -- The FreeVal request using this 'env' will be done async after all sync frames.
+            Right v -> flip runReaderT env $ unJSM $ withJSValId v $ \retValId -> do
+              pure $ SyncBlockReq_Result retValId
           let !newReadyFrames = M.insertWith (error "should be impossible: trying to return from a sync frame that has already returned") myDepth syncBlockReq oldReadyFrames
           !newFrameTries <- case myRetVal of
             Right _ -> pure (M.delete myDepth oldFrameTries)
@@ -178,13 +184,6 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
               mapM_ stopTry (M.elems toStop)
               pure newFrameTries
           return (oldDepth, newReadyFrames, newFrameTries)
-      -- Even though the valId is escaping, this is safe because we know that our yielded value will go out before any potential FreeVal request could go out
-      -- The FreeVal request will be done async after all sync frames.
-      getSyncBlockReqForResult :: Int -> CallbackResult -> IO SyncBlockReq
-      getSyncBlockReqForResult depth = \case
-        Left e -> pure $ SyncBlockReq_Throw depth (T.pack $ show e)
-        Right v -> flip runReaderT env $ unJSM $ withJSValId v $ \retValId -> do
-          pure $ SyncBlockReq_Result retValId
       yieldRequests = do
         takeMVar yieldReadyVar
         fixEnqueue <$> swapMVar yieldAccumVar []
