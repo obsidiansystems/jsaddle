@@ -135,32 +135,18 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
       tryEnterSyncFrame :: (Int -> MVar TryId -> IO CallbackResult) -> IO [(Int, SyncBlockReq)]
       tryEnterSyncFrame startNewFrame = modifyMVar syncCallbackState $ \(oldDepth, readyFrames, oldFrameTries) -> modifyMVar yieldAccumVar $ \oldSyncBlockReqs -> do
         let
-          getResults (d, req) = case req of
-            SyncBlockReq_Result _ -> Just (d, req)
-            _ -> Nothing
           isThrow req = case req of
             SyncBlockReq_Throw _ _ -> True
             _ -> False
-          isReq req = case req of
-            SyncBlockReq_Req _ -> True
-            _ -> False
-          -- If we have a throw on the oldDepth, then the new frame cannot be started
-          -- Need to do throw immediately on the new frame in addition to the oldDepth
-          startingNewFrame = null $ filter (isThrow . snd) $ oldSyncBlockReqs
-          oldResults = mapMaybe getResults oldSyncBlockReqs
+          -- If we have a throw on a lower frame, then the new frame should not be started
+          -- Need to do throw immediately on the new frame
+          startingNewFrame = not $ any isThrow $ M.elems readyFrames
           -- these are sent immediately
           newSyncBlockReqsF
             | not startingNewFrame =
-              -- The current frame which did StartCallback is not known, so use 0
-              ((0, SyncBlockReq_Throw 0 ("AsyncCancelled: Lower frame has exception")) :)
-            | not (null oldResults) = filter (isReq . snd)
+              ((succ oldDepth, SyncBlockReq_Throw (succ oldDepth) ("AsyncCancelled: Lower frame has exception")) :)
             | otherwise = id
           !newDepth = if startingNewFrame then succ oldDepth else oldDepth
-          -- If we have a pending Result, then we cannot send it now
-          -- Need to put it back in readyFrames
-          newReadyFrames = if startingNewFrame && not (null oldResults)
-            then foldl' (\m (d, r) -> M.insert d r m) readyFrames oldResults
-            else readyFrames
         newFrameTries <- if startingNewFrame
           then do
             tryMVar <- newEmptyMVar
@@ -169,7 +155,7 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
               <$> takeMVar tryMVar
           else pure oldFrameTries
         when (not (null oldSyncBlockReqs)) $ takeMVar yieldReadyVar
-        return (([]), ((newDepth, newReadyFrames, newFrameTries), newSyncBlockReqsF (fixEnqueue oldSyncBlockReqs)))
+        return (([]), ((newDepth, readyFrames, newFrameTries), newSyncBlockReqsF (fixEnqueue oldSyncBlockReqs)))
       exitSyncFrame :: Int -> CallbackResult -> IO ()
       exitSyncFrame myDepth myRetVal = modifyMVar_ syncCallbackState $ \(oldDepth, oldReadyFrames, oldFrameTries) -> case oldDepth `compare` myDepth of
         LT -> error "should be impossible: trying to return from deeper sync frame than the current depth"
