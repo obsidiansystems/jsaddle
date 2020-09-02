@@ -280,25 +280,21 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
         SyncCommand_StartCallback callbackId this args -> do
           mCallback <- fmap (M.lookup callbackId) $ atomically $ readTVar callbacks
           case mCallback of
-            Just (callback :: JSVal -> [JSVal] -> JSM JSVal) -> do
-              reqs <- tryEnterSyncFrame $ \myDepth tryIdMVar -> do
-                threadId <- myThreadId
-                syncStateLocal <- newMVar SyncState_InSync
-                newChildTryIdTVar <- newTVarIO Nothing
-                let syncEnv = env { _jsContextRef_sendReq = \req -> enqueueYieldVal (myDepth, SyncBlockReq_Req req)
-                                  , _jsContextRef_syncThreadId = Just threadId
-                                  , _jsContextRef_myThreadId = threadId
-                                  , _jsContextRef_childTryIdTVar = newChildTryIdTVar
-                                  , _jsContextRef_syncState = syncStateLocal }
-                    run = do
-                      JSM $ asks _jsContextRef_myTryId >>= liftIO . putMVar tryIdMVar
-                      join $ callback <$> wrapJSVal this <*> traverse wrapJSVal args
-                try $ flip runReaderT syncEnv $ unJSM $
-                  run `catchError` (\v -> unsafeInlineLiftIO $
-                                   putStrLn "JavaScriptException happened in sync callback" >> throwIO (JavaScriptException v))
-              case reqs of
-                [] -> yieldRequests
-                _ -> pure reqs
+            Just (callback :: JSVal -> [JSVal] -> JSM JSVal) -> tryEnterSyncFrame $ \myDepth tryIdMVar -> do
+              threadId <- myThreadId
+              syncStateLocal <- newMVar SyncState_InSync
+              newChildTryIdTVar <- newTVarIO Nothing
+              let syncEnv = env { _jsContextRef_sendReq = \req -> enqueueYieldVal (myDepth, SyncBlockReq_Req req)
+                                , _jsContextRef_syncThreadId = Just threadId
+                                , _jsContextRef_myThreadId = threadId
+                                , _jsContextRef_childTryIdTVar = newChildTryIdTVar
+                                , _jsContextRef_syncState = syncStateLocal }
+                  run = do
+                    JSM $ asks _jsContextRef_myTryId >>= liftIO . putMVar tryIdMVar
+                    join $ callback <$> wrapJSVal this <*> traverse wrapJSVal args
+              try $ flip runReaderT syncEnv $ unJSM $
+                run `catchError` (\v -> unsafeInlineLiftIO $
+                                 putStrLn "JavaScriptException happened in sync callback" >> throwIO (JavaScriptException v))
             Nothing -> error $ "sync callback " <> show callbackId <> " called, but does not exist"
         SyncCommand_Continue -> do
           let go = do
