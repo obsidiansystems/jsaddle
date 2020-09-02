@@ -56,6 +56,7 @@ import Control.Concurrent.STM.TVar (writeTVar, readTVar, newTVarIO, modifyTVar',
 import Control.Concurrent.MVar
        (putMVar, takeMVar, newMVar, newEmptyMVar, modifyMVar, modifyMVar_, swapMVar, tryPutMVar, MVar)
 
+import Data.List (sortOn)
 import Data.Monoid ((<>))
 import Data.Map (Map)
 import Data.Maybe
@@ -130,6 +131,7 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
           let !new = val : old
           return (new, null old)
         when wasEmpty $ putMVar yieldReadyVar ()
+      fixEnqueue = reverse . (sortOn fst)
       tryEnterSyncFrame :: (Int -> MVar TryId -> IO CallbackResult) -> IO [(Int, SyncBlockReq)]
       tryEnterSyncFrame startNewFrame = modifyMVar syncCallbackState $ \(oldDepth, readyFrames, oldFrameTries) -> modifyMVar yieldAccumVar $ \oldSyncBlockReqs -> do
         let
@@ -147,12 +149,12 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
           startingNewFrame = null $ filter (isThrow . snd) $ oldSyncBlockReqs
           oldResults = mapMaybe getResults oldSyncBlockReqs
           -- these are sent immediately
-          newSyncBlockReqs
+          newSyncBlockReqsF
             | not startingNewFrame =
               -- The current frame which did StartCallback is not known, so use 0
-              (0, SyncBlockReq_Throw 0 ("AsyncCancelled: Lower frame has exception")) : (reverse oldSyncBlockReqs)
-            | not (null oldResults) = filter (isReq . snd) $ oldSyncBlockReqs
-            | otherwise = reverse $ oldSyncBlockReqs
+              ((0, SyncBlockReq_Throw 0 ("AsyncCancelled: Lower frame has exception")) :)
+            | not (null oldResults) = filter (isReq . snd)
+            | otherwise = id
           !newDepth = if startingNewFrame then succ oldDepth else oldDepth
           -- If we have a pending Result, then we cannot send it now
           -- Need to put it back in readyFrames
@@ -167,7 +169,7 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
               <$> takeMVar tryMVar
           else pure oldFrameTries
         when (not (null oldSyncBlockReqs)) $ takeMVar yieldReadyVar
-        return (([]), ((newDepth, newReadyFrames, newFrameTries), newSyncBlockReqs))
+        return (([]), ((newDepth, newReadyFrames, newFrameTries), newSyncBlockReqsF (fixEnqueue oldSyncBlockReqs)))
       exitSyncFrame :: Int -> CallbackResult -> IO ()
       exitSyncFrame myDepth myRetVal = modifyMVar_ syncCallbackState $ \(oldDepth, oldReadyFrames, oldFrameTries) -> case oldDepth `compare` myDepth of
         LT -> error "should be impossible: trying to return from deeper sync frame than the current depth"
@@ -214,7 +216,7 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
           pure $ SyncBlockReq_Result retValId
       yield = do
         takeMVar yieldReadyVar
-        reverse <$> swapMVar yieldAccumVar []
+        fixEnqueue <$> swapMVar yieldAccumVar []
       processRsp = traverse_ $ \case
         Rsp_GetJson getJsonReqId val -> do
           reqs <- atomically $ do
