@@ -180,7 +180,8 @@ function jsaddle(global, sendRsp, processSyncCommand, RESPONSE_BUFFER_MAX_SIZE) 
         throw "processAllEnqueuedReqs: syncReq is not SyncBlockReq_Req; this should never happen because Result/Throw should only be sent while a synchronous request is still in progress";
       }
       if (tuple[0] > syncDepth) {
-        throw "processAllEnqueuedReqs: queue contains a request for a frame which has exited";
+        console.warn ("processAllEnqueuedReqs: queue contains a request for a frame which has exited");
+        continue;
       }
       processSingleReq(syncReq.contents);
     }

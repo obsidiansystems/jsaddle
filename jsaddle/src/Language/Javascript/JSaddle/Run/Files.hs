@@ -218,7 +218,8 @@ jsaddleCoreJs = "\
     \        throw \"processAllEnqueuedReqs: syncReq is not SyncBlockReq_Req; this should never happen because Result/Throw should only be sent while a synchronous request is still in progress\";\n\
     \      }\n\
     \      if (tuple[0] > syncDepth) {\n\
-    \        throw \"processAllEnqueuedReqs: queue contains a request for a frame which has exited\";\n\
+    \        console.warn (\"processAllEnqueuedReqs: queue contains a request for a frame which has exited\");\n\
+    \        continue;\n\
     \      }\n\
     \      processSingleReq(syncReq.contents);\n\
     \    }\n\
