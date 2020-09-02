@@ -6,6 +6,7 @@
 {-# LANGUAGE UnboxedTuples #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE TupleSections #-}
 -----------------------------------------------------------------------------
 --
 -- Module      :  Language.Javascript.JSaddle.Run
@@ -46,14 +47,14 @@ module Language.Javascript.JSaddle.Run (
 import Control.Exception (try, SomeException(..), throwIO)
 import Control.Monad (when, join, void, unless, forever)
 import Control.Monad.Except (catchError)
-import Control.Monad.Trans.Reader (runReaderT)
+import Control.Monad.Trans.Reader (runReaderT, asks)
 import Control.Monad.IO.Class (MonadIO(..))
 import Control.Monad.STM (atomically)
 import Control.Concurrent (myThreadId, forkIO, threadDelay)
 import Control.Concurrent.Async (race_, race)
 import Control.Concurrent.STM.TVar (writeTVar, readTVar, newTVarIO, modifyTVar', readTVarIO)
 import Control.Concurrent.MVar
-       (putMVar, takeMVar, newMVar, newEmptyMVar, modifyMVar, modifyMVar_, swapMVar, tryPutMVar)
+       (putMVar, takeMVar, newMVar, newEmptyMVar, modifyMVar, modifyMVar_, swapMVar, tryPutMVar, MVar)
 
 import Data.Monoid ((<>))
 import Data.Map (Map)
@@ -116,7 +117,7 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
   yieldReadyVar <- newEmptyMVar -- Filled when there is at least one item in yieldAccumVar
   -- Each value in the map corresponds to a value ready to be returned from the sync frame corresponding to its key
   -- INVARIANT: \(depth, readyFrames) -> all (< depth) $ M.keys readyFrames
-  syncCallbackState <- newMVar (0, M.empty)
+  syncCallbackState <- newMVar (0, M.empty, M.empty)
   syncState <- newMVar SyncState_InSync
   nextSyncReqId <- newTVarIO $ SyncReqId 1
   syncReqs <- newTVarIO mempty
@@ -128,8 +129,8 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
           let !new = (depth, SyncBlockReq_Req req) : old
           return (new, null old)
         when wasEmpty $ putMVar yieldReadyVar ()
-      tryEnterSyncFrame :: (Int -> IO CallbackResult) -> IO [(Int, SyncBlockReq)]
-      tryEnterSyncFrame startNewFrame = modifyMVar syncCallbackState $ \(oldDepth, readyFrames) -> modifyMVar yieldAccumVar $ \old -> do
+      tryEnterSyncFrame :: (Int -> MVar TryId -> IO CallbackResult) -> IO [(Int, SyncBlockReq)]
+      tryEnterSyncFrame startNewFrame = modifyMVar syncCallbackState $ \(oldDepth, readyFrames, oldFrameTries) -> modifyMVar yieldAccumVar $ \old -> do
         let
           isThrow req = case req of
             SyncBlockReq_Throw _ _ -> True
@@ -143,12 +144,17 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
               (succ oldDepth, SyncBlockReq_Throw (succ oldDepth) ("AsyncCancelled: Lower frame has exception")) : (reverse old)
             | otherwise = reverse old
           !newDepth = if startingNewFrame then succ oldDepth else oldDepth
-        when startingNewFrame $ void $ forkIO $ do
-          exitSyncFrame newDepth =<< startNewFrame newDepth
+        newFrameTries <- if startingNewFrame
+          then do
+            tryMVar <- newEmptyMVar
+            void $ forkIO $ (exitSyncFrame newDepth =<< startNewFrame newDepth tryMVar)
+            (\t -> M.insertWith (error "frame's tryId already present") newDepth t oldFrameTries)
+              <$> takeMVar tryMVar
+          else pure oldFrameTries
         when (not (null old)) $ takeMVar yieldReadyVar
-        return ([], ((newDepth, readyFrames), new))
+        return (([]), ((newDepth, readyFrames, newFrameTries), new))
       exitSyncFrame :: Int -> CallbackResult -> IO ()
-      exitSyncFrame myDepth myRetVal = modifyMVar_ syncCallbackState $ \(oldDepth, oldReadyFrames) -> case oldDepth `compare` myDepth of
+      exitSyncFrame myDepth myRetVal = modifyMVar_ syncCallbackState $ \(oldDepth, oldReadyFrames, oldFrameTries) -> case oldDepth `compare` myDepth of
         LT -> error "should be impossible: trying to return from deeper sync frame than the current depth"
         -- Just store our value so it can be yielded later
         _ -> do
@@ -160,11 +166,12 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
             Right v -> flip runReaderT env $ unJSM $ withJSValId v $ \retValId -> do
               pure $ SyncBlockReq_Result retValId
           let !newReadyFrames = M.insertWith (error "should be impossible: trying to return from a sync frame that has already returned") myDepth syncBlockReq oldReadyFrames
-          return (oldDepth, newReadyFrames)
+              !newFrameTries = M.delete myDepth oldFrameTries
+          return (oldDepth, newReadyFrames, newFrameTries)
       yieldRequests = do
         takeMVar yieldReadyVar
         reverse <$> swapMVar yieldAccumVar []
-      yieldResults = modifyMVar syncCallbackState $ \(oldDepth, oldReadyFrames) -> do
+      yieldResults = modifyMVar syncCallbackState $ \(oldDepth, oldReadyFrames, oldFrameTries) -> do
         let yieldAllReady :: (Int, Map Int SyncBlockReq)
               -> ([(Int, SyncBlockReq)], (Int, Map Int SyncBlockReq))
             yieldAllReady (depth, readyFrames) = case M.lookup depth readyFrames of
@@ -173,7 +180,7 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
                 where
                   (vs, remaining) = yieldAllReady (pred depth, M.delete depth readyFrames)
             (allResults, (newDepth, newReadyFrames)) = yieldAllReady (oldDepth, oldReadyFrames)
-        pure $ ((newDepth, newReadyFrames), allResults)
+        pure $ ((newDepth, newReadyFrames, oldFrameTries), allResults)
       processRsp = traverse_ $ \case
         Rsp_GetJson getJsonReqId val -> do
           reqs <- atomically $ do
@@ -257,15 +264,17 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
         SyncCommand_StartCallback callbackId this args -> do
           mCallback <- fmap (M.lookup callbackId) $ atomically $ readTVar callbacks
           case mCallback of
-            Just (callback :: JSVal -> [JSVal] -> JSM JSVal) -> tryEnterSyncFrame $ \myDepth -> do
+            Just (callback :: JSVal -> [JSVal] -> JSM JSVal) -> tryEnterSyncFrame $ \myDepth tryIdMVar -> do
               threadId <- myThreadId
               syncStateLocal <- newMVar SyncState_InSync
               let syncEnv = env { _jsContextRef_sendReq = enqueueSyncBlockRequest myDepth
                                 , _jsContextRef_syncThreadId = Just threadId
                                 , _jsContextRef_syncState = syncStateLocal }
+                  run = do
+                    JSM $ asks _jsContextRef_myTryId >>= liftIO . putMVar tryIdMVar
+                    join $ callback <$> wrapJSVal this <*> traverse wrapJSVal args
               try $ flip runReaderT syncEnv $ unJSM $
-                (join $ callback <$> wrapJSVal this <*> traverse wrapJSVal args)
-                  `catchError` (\v -> unsafeInlineLiftIO $
+                run `catchError` (\v -> unsafeInlineLiftIO $
                                  putStrLn "JavaScriptException happened in sync callback" >> throwIO (JavaScriptException v))
             Nothing -> error $ "sync callback " <> show callbackId <> " called, but does not exist"
         SyncCommand_Continue -> go
