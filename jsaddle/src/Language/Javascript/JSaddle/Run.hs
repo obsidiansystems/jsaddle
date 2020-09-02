@@ -52,11 +52,10 @@ import Control.Monad.IO.Class (MonadIO(..))
 import Control.Monad.STM (atomically)
 import Control.Concurrent (myThreadId, forkIO, threadDelay)
 import Control.Concurrent.Async (race_, race)
-import Control.Concurrent.STM.TVar (writeTVar, readTVar, newTVarIO, modifyTVar', readTVarIO)
+import Control.Concurrent.STM.TVar (writeTVar, readTVar, newTVarIO, modifyTVar')
 import Control.Concurrent.MVar
        (putMVar, takeMVar, newMVar, newEmptyMVar, modifyMVar, modifyMVar_, swapMVar, tryPutMVar, MVar)
 
-import Data.List (sortOn)
 import Data.Monoid ((<>))
 import Data.Map (Map)
 import Data.Maybe
@@ -67,7 +66,7 @@ import GHCJS.Prim.Internal (primToJSVal)
 
 import Language.Javascript.JSaddle.Types
 --TODO: Handle JS exceptions
-import Data.Foldable (forM_, traverse_, foldl')
+import Data.Foldable (forM_, traverse_)
 import System.IO.Unsafe
 import Language.Javascript.JSaddle.Monad (syncPoint)
 
@@ -131,9 +130,8 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
           let !new = val : old
           return (new, null old)
         when wasEmpty $ putMVar yieldReadyVar ()
-      fixEnqueue = reverse . (sortOn fst)
       tryEnterSyncFrame :: (Int -> MVar TryId -> IO CallbackResult) -> IO [(Int, SyncBlockReq)]
-      tryEnterSyncFrame startNewFrame = modifyMVar syncCallbackState $ \(oldDepth, readyFrames, oldFrameTries) -> modifyMVar yieldAccumVar $ \oldSyncBlockReqs -> do
+      tryEnterSyncFrame startNewFrame = modifyMVar syncCallbackState $ \(oldDepth, readyFrames, oldFrameTries) -> modifyMVar yieldAccumVar $ \old -> do
         let
           isThrow req = case req of
             SyncBlockReq_Throw _ _ -> True
@@ -142,10 +140,10 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
           -- Need to do throw immediately on the new frame
           startingNewFrame = not $ any isThrow $ M.elems readyFrames
           -- these are sent immediately
-          newSyncBlockReqsF
+          new
             | not startingNewFrame =
-              ((succ oldDepth, SyncBlockReq_Throw (succ oldDepth) ("AsyncCancelled: Lower frame has exception")) :)
-            | otherwise = id
+              (succ oldDepth, SyncBlockReq_Throw (succ oldDepth) ("AsyncCancelled: Lower frame has exception")) : (reverse old)
+            | otherwise = reverse old
           !newDepth = if startingNewFrame then succ oldDepth else oldDepth
         newFrameTries <- if startingNewFrame
           then do
@@ -154,8 +152,8 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
             (\t -> M.insertWith (error "frame's tryId already present") newDepth t oldFrameTries)
               <$> takeMVar tryMVar
           else pure oldFrameTries
-        when (not (null oldSyncBlockReqs)) $ takeMVar yieldReadyVar
-        return (([]), ((newDepth, readyFrames, newFrameTries), newSyncBlockReqsF (fixEnqueue oldSyncBlockReqs)))
+        when (not (null old)) $ takeMVar yieldReadyVar
+        return ([], ((newDepth, readyFrames, newFrameTries), new))
       exitSyncFrame :: Int -> CallbackResult -> IO ()
       exitSyncFrame myDepth myRetVal = modifyMVar_ syncCallbackState $ \(oldDepth, oldReadyFrames, oldFrameTries) -> case oldDepth `compare` myDepth of
         LT -> error "should be impossible: trying to return from deeper sync frame than the current depth"
@@ -186,7 +184,7 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
           return (oldDepth, newReadyFrames, newFrameTries)
       yieldRequests = do
         takeMVar yieldReadyVar
-        fixEnqueue <$> swapMVar yieldAccumVar []
+        reverse <$> swapMVar yieldAccumVar []
       yieldResults = modifyMVar syncCallbackState $ \(oldDepth, oldReadyFrames, oldFrameTries) -> do
         let yieldAllReady :: (Int, Map Int SyncBlockReq)
               -> ([(Int, SyncBlockReq)], (Int, Map Int SyncBlockReq))
@@ -195,8 +193,8 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
               Just v -> ((depth,v):vs, remaining)
                 where
                   (vs, remaining) = yieldAllReady (pred depth, M.delete depth readyFrames)
-            (pendingResults, (newDepth, newReadyFrames)) = yieldAllReady (oldDepth, oldReadyFrames)
-        pure $ ((newDepth, newReadyFrames, oldFrameTries), pendingResults)
+            (allResults, (newDepth, newReadyFrames)) = yieldAllReady (oldDepth, oldReadyFrames)
+        pure $ ((newDepth, newReadyFrames, oldFrameTries), allResults)
       processRsp = traverse_ $ \case
         Rsp_GetJson getJsonReqId val -> do
           reqs <- atomically $ do
