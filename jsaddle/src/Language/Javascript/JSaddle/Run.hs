@@ -50,7 +50,7 @@ import Control.Monad.Trans.Reader (runReaderT)
 import Control.Monad.IO.Class (MonadIO(..))
 import Control.Monad.STM (atomically)
 import Control.Concurrent (myThreadId, forkIO, threadDelay)
-import Control.Concurrent.Async (race_)
+import Control.Concurrent.Async (race_, race)
 import Control.Concurrent.STM.TVar (writeTVar, readTVar, newTVarIO, modifyTVar', readTVarIO)
 import Control.Concurrent.MVar
        (putMVar, takeMVar, newMVar, newEmptyMVar, modifyMVar, modifyMVar_, swapMVar, tryPutMVar)
@@ -134,35 +134,30 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
       exitSyncFrame :: Int -> CallbackResult -> IO ()
       exitSyncFrame myDepth myRetVal = modifyMVar_ syncCallbackState $ \(oldDepth, oldReadyFrames) -> case oldDepth `compare` myDepth of
         LT -> error "should be impossible: trying to return from deeper sync frame than the current depth"
-        -- We're the top frame, so yield our value to the caller
-        EQ -> do
-          let yieldAllReady :: Int -> Map Int SyncBlockReq -> SyncBlockReq -> IO (Int, Map Int SyncBlockReq)
-              yieldAllReady depth readyFrames syncBlockReq = do
-                enqueueYieldVal $ (depth, syncBlockReq)
-                let !nextDepth = pred depth
-                case M.maxViewWithKey readyFrames of
-                  -- The parent frame is also ready to yield
-                  Just ((k, nextRetVal), nextReadyFrames)
-                    | k == nextDepth
-                      -> yieldAllReady nextDepth nextReadyFrames nextRetVal
-                  _ -> return (nextDepth, readyFrames)
-          mySyncBlockReq <- getSyncBlockReqForResult myDepth myRetVal
-          yieldAllReady oldDepth oldReadyFrames mySyncBlockReq
-        -- We're not the top frame, so just store our value so it can be yielded later
-        GT -> do
-          !syncBlockReq <- getSyncBlockReqForResult myDepth myRetVal
+        -- Just store our value so it can be yielded later
+        _ -> do
+          !syncBlockReq <- case myRetVal of
+            Left e -> pure $ SyncBlockReq_Throw myDepth (T.pack $ show e)
+            -- Even though the valId is escaping, this is safe because we know that our yielded value will
+            -- go out before any potential FreeVal request could go out
+            -- The FreeVal request using this 'env' will be done async after all sync frames.
+            Right v -> flip runReaderT env $ unJSM $ withJSValId v $ \retValId -> do
+              pure $ SyncBlockReq_Result retValId
           let !newReadyFrames = M.insertWith (error "should be impossible: trying to return from a sync frame that has already returned") myDepth syncBlockReq oldReadyFrames
           return (oldDepth, newReadyFrames)
-      -- Even though the valId is escaping, this is safe because we know that our yielded value will go out before any potential FreeVal request could go out
-      -- The FreeVal request will be done async after all sync frames.
-      getSyncBlockReqForResult :: Int -> CallbackResult -> IO SyncBlockReq
-      getSyncBlockReqForResult depth = \case
-        Left e -> pure $ SyncBlockReq_Throw depth (T.pack $ show e)
-        Right v -> flip runReaderT env $ unJSM $ withJSValId v $ \retValId -> do
-          pure $ SyncBlockReq_Result retValId
-      yield = do
+      yieldRequests = do
         takeMVar yieldReadyVar
         reverse <$> swapMVar yieldAccumVar []
+      yieldResults = modifyMVar syncCallbackState $ \(oldDepth, oldReadyFrames) -> do
+        let yieldAllReady :: (Int, Map Int SyncBlockReq)
+              -> ([(Int, SyncBlockReq)], (Int, Map Int SyncBlockReq))
+            yieldAllReady (depth, readyFrames) = case M.lookup depth readyFrames of
+              Nothing -> ([], (depth, readyFrames))
+              Just v -> ((depth,v):vs, remaining)
+                where
+                  (vs, remaining) = yieldAllReady (pred depth, M.delete depth readyFrames)
+            (allResults, (newDepth, newReadyFrames)) = yieldAllReady (oldDepth, oldReadyFrames)
+        pure $ ((newDepth, newReadyFrames), allResults)
       processRsp = traverse_ $ \case
         Rsp_GetJson getJsonReqId val -> do
           reqs <- atomically $ do
@@ -259,9 +254,17 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
                     `catchError` (\v -> unsafeInlineLiftIO $
                                    putStrLn "JavaScriptException happened in sync callback" >> throwIO (JavaScriptException v))
                 exitSyncFrame myDepth result
-              yield
+              yieldRequests
             Nothing -> error $ "sync callback " <> show callbackId <> " called, but does not exist"
-        SyncCommand_Continue -> yield
+        SyncCommand_Continue -> go
+          where
+            go = do
+              -- Only yieldResults in Continue. While doing StartCallback there could be pending requests
+              -- on JS side which could result in inconsistencies in the state of JS and Haskell
+              results <- yieldResults
+              case results of
+                [] -> either id id <$> race yieldRequests (threadDelay 100 >> go)
+                _ -> pure results
   void $ forkIO doSendReqs
   return (processRsp, processSyncCommand, env)
 
