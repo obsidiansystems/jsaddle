@@ -296,15 +296,15 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
                 run `catchError` (\v -> unsafeInlineLiftIO $
                                  putStrLn "JavaScriptException happened in sync callback" >> throwIO (JavaScriptException v))
             Nothing -> error $ "sync callback " <> show callbackId <> " called, but does not exist"
-        SyncCommand_Continue -> do
-          let go = do
-                -- Only yieldResults in Continue. While doing StartCallback there could be pending requests
-                -- on JS side which could result in inconsistencies in the state of JS and Haskell
-                results <- yieldResults
-                case results of
-                  [] -> either id id <$> race yieldRequests (threadDelay 100 >> go)
-                  _ -> pure results
-          go
+        SyncCommand_Continue -> go
+          where
+            go = do
+              -- Only yieldResults in Continue. While doing StartCallback there could be pending requests
+              -- on JS side which could result in inconsistencies in the state of JS and Haskell
+              results <- yieldResults
+              case results of
+                [] -> either id id <$> race yieldRequests (threadDelay 100 >> go)
+                _ -> pure results
   void $ forkIO doSendReqs
   return (processRsp, processSyncCommand, env)
 
