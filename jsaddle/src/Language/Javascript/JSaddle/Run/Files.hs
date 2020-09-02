@@ -234,7 +234,15 @@ jsaddleCoreJs = "\
     \        args\n\
     \      ]\n\
     \    });\n\
-    \    syncRequests.enqueueArray(newReqs);\n\
+    \    if ((newReqs[0][1].tag === 'Throw') && (newReqs[0][0] === 0)) {\n\
+    \      // If the first req is Throw, that means an exception happened in lower frame\n\
+    \      // So throw on this frame immediately\n\
+    \      var tuple = newReqs.shift();\n\
+    \      syncRequests.enqueueArray(newReqs);\n\
+    \      throw tuple[1].contents[1];\n\
+    \    } else {\n\
+    \      syncRequests.enqueueArray(newReqs);\n\
+    \    }\n\
     \    while(true) {\n\
     \      var tuple = getNextSyncRequest();\n\
     \      var syncReq = tuple[1];\n\

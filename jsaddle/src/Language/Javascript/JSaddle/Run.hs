@@ -148,7 +148,9 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
           oldResults = mapMaybe getResults oldSyncBlockReqs
           -- these are sent immediately
           newSyncBlockReqs
-            | not startingNewFrame = (succ oldDepth, SyncBlockReq_Throw (succ oldDepth) ("AsyncCancelled: Lower frame has exception")) : (reverse oldSyncBlockReqs)
+            | not startingNewFrame =
+              -- The current frame which did StartCallback is not known, so use 0
+              (0, SyncBlockReq_Throw 0 ("AsyncCancelled: Lower frame has exception")) : (reverse oldSyncBlockReqs)
             | not (null oldResults) = filter (isReq . snd) $ oldSyncBlockReqs
             | otherwise = reverse $ oldSyncBlockReqs
           !newDepth = if startingNewFrame then succ oldDepth else oldDepth

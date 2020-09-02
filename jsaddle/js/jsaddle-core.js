@@ -196,7 +196,15 @@ function jsaddle(global, sendRsp, processSyncCommand, RESPONSE_BUFFER_MAX_SIZE) 
         args
       ]
     });
-    syncRequests.enqueueArray(newReqs);
+    if ((newReqs[0][1].tag === 'Throw') && (newReqs[0][0] === 0)) {
+      // If the first req is Throw, that means an exception happened in lower frame
+      // So throw on this frame immediately
+      var tuple = newReqs.shift();
+      syncRequests.enqueueArray(newReqs);
+      throw tuple[1].contents[1];
+    } else {
+      syncRequests.enqueueArray(newReqs);
+    }
     while(true) {
       var tuple = getNextSyncRequest();
       var syncReq = tuple[1];
