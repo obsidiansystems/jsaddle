@@ -62,6 +62,7 @@ import Data.Maybe
 import qualified Data.Map as M
 import Data.IORef (newIORef)
 import qualified Data.Text as T
+import GHCJS.Prim.Internal (primToJSVal)
 
 import Language.Javascript.JSaddle.Types
 --TODO: Handle JS exceptions
@@ -166,7 +167,20 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
             Right v -> flip runReaderT env $ unJSM $ withJSValId v $ \retValId -> do
               pure $ SyncBlockReq_Result retValId
           let !newReadyFrames = M.insertWith (error "should be impossible: trying to return from a sync frame that has already returned") myDepth syncBlockReq oldReadyFrames
-              !newFrameTries = M.delete myDepth oldFrameTries
+          !newFrameTries <- case myRetVal of
+            Right _ -> pure (M.delete myDepth oldFrameTries)
+            Left _ -> do
+              let
+                (!newFrameTries, toStop) = M.split myDepth oldFrameTries
+                stopTry tryId = do
+                  mTryMVar <- atomically $ do
+                    currentTries <- readTVar tries
+                    writeTVar tries $! M.delete tryId currentTries
+                    return $ M.lookup tryId currentTries
+                  forM_ mTryMVar $ \v ->
+                    putMVar v $ Left $ primToJSVal $ PrimVal_String "Parent Try received an exception."
+              mapM_ stopTry (M.elems toStop)
+              pure newFrameTries
           return (oldDepth, newReadyFrames, newFrameTries)
       yieldRequests = do
         takeMVar yieldReadyVar
