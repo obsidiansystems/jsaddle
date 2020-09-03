@@ -473,7 +473,6 @@ data Req input output
    | Req_GetProperty input input output -- ^ @Req_SetProperty a b c@ ==> @c = b[a];@
    | Req_CallAsFunction input input [input] output
    | Req_CallAsConstructor input [input] output
-   | Req_Throw input
    | Req_FinishTry
    | Req_Sync SyncReqId
    | Req_TriggerSendRsp
@@ -497,7 +496,6 @@ instance Bitraversable Req where
     Req_GetProperty a b c -> Req_GetProperty <$> f a <*> f b <*> g c
     Req_CallAsFunction a b c d -> Req_CallAsFunction <$> f a <*> f b <*> traverse f c <*> g d
     Req_CallAsConstructor a b c -> Req_CallAsConstructor <$> f a <*> traverse f b <*> g c
-    Req_Throw a -> Req_Throw <$> f a
     Req_FinishTry -> pure Req_FinishTry
     Req_Sync s -> pure $ Req_Sync s
     Req_TriggerSendRsp -> pure Req_TriggerSendRsp
@@ -761,7 +759,6 @@ callAsConstructor' :: JSVal -> [JSVal] -> JSM JSVal
 callAsConstructor' f args = withJSValOutput_ $ \ref -> do
   sendReq $ Req_CallAsConstructor f args ref
 
---Exceptions: it's pointless for Haskell-side to throw exceptions to javascript side asynchronously, but perhaps it should be allowed
 instance MonadError JSVal JSM where
   catchError a h = do
     tryId <- newId _jsContextRef_nextTryId
@@ -801,9 +798,18 @@ instance MonadError JSVal JSM where
       Right finishRes -> case finishRes of
         Left e -> h e
         Right res -> pure res
-  throwError e = do
-    sendReq $ Req_Throw e --IDEA: Short-circuit this rather than actually sending it to the JS side
-    JSM $ liftIO $ forever $ threadDelay maxBound
+  throwError e = JSM $ do
+    tries <- asks _jsContextRef_tries
+    tid <- asks _jsContextRef_myTryId
+    liftIO $ do
+      mChildTryMVar <- atomically $ do
+        currentTries <- readTVar tries
+        writeTVar tries $! M.delete tid currentTries
+        return $ M.lookup tid currentTries
+      case mChildTryMVar of
+        Nothing -> pure () -- Could be a race with another exception or FinishTry req
+        Just v -> putMVar v $ Left e
+      forever $ threadDelay maxBound
 
 instance MonadIO JSM where
   liftIO a = do
