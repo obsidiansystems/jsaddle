@@ -114,7 +114,7 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
   nextTryId <- newTVarIO $ TryId 1
   tries <- newTVarIO M.empty
   pendingResults <- newTVarIO M.empty
-  yieldAccumVar <- newMVar [] -- Accumulates results that need to be yielded
+  yieldAccumVar <- newMVar (False, []) -- Accumulates results that need to be yielded
   yieldReadyVar <- newEmptyMVar -- Filled when there is at least one item in yieldAccumVar
   -- Each value in the map corresponds to a value ready to be returned from the sync frame corresponding to its key
   -- INVARIANT: \(depth, readyFrames) -> all (< depth) $ M.keys readyFrames
@@ -126,12 +126,12 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
   pendingReqs <- newTVarIO []
   pendingReqsCount <- newTVarIO (0 :: Int)
   let enqueueSyncBlockRequest depth req = do
-        wasEmpty <- modifyMVar yieldAccumVar $ \old -> do
+        doPutMVar <- modifyMVar yieldAccumVar $ \(resultReady, old) -> do
           let !new = (depth, SyncBlockReq_Req req) : old
-          return (new, null old)
-        when wasEmpty $ putMVar yieldReadyVar ()
+          return ((resultReady, new), null old && not resultReady)
+        when doPutMVar $ putMVar yieldReadyVar ()
       tryEnterSyncFrame :: (Int -> MVar TryId -> IO CallbackResult) -> IO [(Int, SyncBlockReq)]
-      tryEnterSyncFrame startNewFrame = modifyMVar syncCallbackState $ \(oldDepth, readyFrames, oldFrameTries) -> modifyMVar yieldAccumVar $ \old -> do
+      tryEnterSyncFrame startNewFrame = modifyMVar syncCallbackState $ \(oldDepth, readyFrames, oldFrameTries) -> modifyMVar yieldAccumVar $ \(resultReady, old) -> do
         let
           isThrow req = case req of
             SyncBlockReq_Throw _ _ -> True
@@ -139,6 +139,7 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
           -- If we have a throw on a lower frame, then the new frame should not be started
           -- Need to do throw immediately on the new frame
           startingNewFrame = not $ any isThrow $ M.elems readyFrames
+          !newResultReady = if startingNewFrame then False else resultReady
           -- these are sent immediately
           new
             | not startingNewFrame =
@@ -152,8 +153,8 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
             (\t -> M.insertWith (error "frame's tryId already present") newDepth t oldFrameTries)
               <$> takeMVar tryMVar
           else pure oldFrameTries
-        when (not (null old)) $ takeMVar yieldReadyVar
-        return (([]), ((newDepth, readyFrames, newFrameTries), new))
+        unless (newResultReady || (null old && not resultReady)) $ takeMVar yieldReadyVar
+        return ((newResultReady, []), ((newDepth, readyFrames, newFrameTries), new))
       exitSyncFrame :: Int -> CallbackResult -> IO ()
       exitSyncFrame myDepth myRetVal = modifyMVar_ syncCallbackState $ \(oldDepth, oldReadyFrames, oldFrameTries) -> case oldDepth `compare` myDepth of
         LT -> error "should be impossible: trying to return from deeper sync frame than the current depth"
@@ -181,11 +182,12 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
                     putMVar v $ Left $ primToJSVal $ PrimVal_String "Parent Try received an exception."
               mapM_ stopTry (M.elems toStop)
               pure newFrameTries
+          when (myDepth == oldDepth) $ modifyMVar_ yieldAccumVar $ \(resultReady, old) -> do
+            when ((null old) && (not resultReady)) $ putMVar yieldReadyVar ()
+            return (True, old)
           return (oldDepth, newReadyFrames, newFrameTries)
-      yieldRequests = do
-        takeMVar yieldReadyVar
-        reverse <$> swapMVar yieldAccumVar []
-      yieldResults = modifyMVar syncCallbackState $ \(oldDepth, oldReadyFrames, oldFrameTries) -> do
+
+      yield = modifyMVar syncCallbackState $ \(oldDepth, oldReadyFrames, oldFrameTries) -> do
         let yieldAllReady :: (Int, Map Int SyncBlockReq)
               -> ([(Int, SyncBlockReq)], (Int, Map Int SyncBlockReq))
             yieldAllReady (depth, readyFrames) = case M.lookup depth readyFrames of
@@ -194,7 +196,8 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
                 where
                   (vs, remaining) = yieldAllReady (pred depth, M.delete depth readyFrames)
             (allResults, (newDepth, newReadyFrames)) = yieldAllReady (oldDepth, oldReadyFrames)
-        pure $ ((newDepth, newReadyFrames, oldFrameTries), allResults)
+        requests <- reverse . snd <$> swapMVar yieldAccumVar (False, [])
+        pure $ ((newDepth, newReadyFrames, oldFrameTries), allResults ++ requests)
       processRsp = traverse_ $ \case
         Rsp_GetJson getJsonReqId val -> do
           reqs <- atomically $ do
@@ -291,15 +294,9 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
                 run `catchError` (\v -> unsafeInlineLiftIO $
                                  putStrLn "JavaScriptException happened in sync callback" >> throwIO (JavaScriptException v))
             Nothing -> error $ "sync callback " <> show callbackId <> " called, but does not exist"
-        SyncCommand_Continue -> go
-          where
-            go = do
-              -- Only yieldResults in Continue. While doing StartCallback there could be pending requests
-              -- on JS side which could result in inconsistencies in the state of JS and Haskell
-              results <- yieldResults
-              case results of
-                [] -> either id id <$> race yieldRequests (threadDelay 100 >> go)
-                _ -> pure results
+        SyncCommand_Continue -> do
+          takeMVar yieldReadyVar
+          yield
   void $ forkIO doSendReqs
   return (processRsp, processSyncCommand, env)
 
