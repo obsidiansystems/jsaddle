@@ -204,7 +204,16 @@ function jsaddle(global, sendRsp, processSyncCommand, RESPONSE_BUFFER_MAX_SIZE) 
       ]
     });
     if (newReqs.length > 0) {
-      syncRequests.enqueueArray(newReqs);
+      if ((newReqs[0][1].tag === 'Throw') && (newReqs[0][0] === syncDepth)) {
+        // If we receive the first request as Throw, it means that StartCallback did not happen
+        // So throw immediately
+        var tuple = newReqs.shift();
+        syncRequests.enqueueArray(newReqs);
+        syncDepth--;
+        throw tuple[1].contents[1];
+      } else {
+        syncRequests.enqueueArray(newReqs);
+      }
     }
     while(true) {
       var tuple = getNextSyncRequest();

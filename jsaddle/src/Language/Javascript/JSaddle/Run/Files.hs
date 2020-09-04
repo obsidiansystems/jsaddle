@@ -242,7 +242,16 @@ jsaddleCoreJs = "\
     \      ]\n\
     \    });\n\
     \    if (newReqs.length > 0) {\n\
-    \      syncRequests.enqueueArray(newReqs);\n\
+    \      if ((newReqs[0][1].tag === 'Throw') && (newReqs[0][0] === syncDepth)) {\n\
+    \        // If we receive the first request as Throw, it means that StartCallback did not happen\n\
+    \        // So throw immediately\n\
+    \        var tuple = newReqs.shift();\n\
+    \        syncRequests.enqueueArray(newReqs);\n\
+    \        syncDepth--;\n\
+    \        throw tuple[1].contents[1];\n\
+    \      } else {\n\
+    \        syncRequests.enqueueArray(newReqs);\n\
+    \      }\n\
     \    }\n\
     \    while(true) {\n\
     \      var tuple = getNextSyncRequest();\n\
