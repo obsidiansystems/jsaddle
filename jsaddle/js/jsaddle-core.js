@@ -282,6 +282,7 @@ function jsaddle(global, sendRsp, processSyncCommand) {
     processSingleReq(req);
   };
   return {
-    processReq: processReq
+    processReq: processReq,
+    processReqs: function(reqs) { for (req of reqs) { processReq(req);}}
   };
 }
