@@ -63,6 +63,7 @@ import qualified Data.Text as T
 import GHCJS.Prim.Internal (primToJSVal)
 
 import Language.Javascript.JSaddle.Types
+import Language.Javascript.JSaddle.Value (valToText)
 --TODO: Handle JS exceptions
 import Data.Foldable (forM_, traverse_, foldl')
 import Language.Javascript.JSaddle.Monad (syncPoint)
@@ -294,8 +295,9 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
                       JSM $ asks _jsContextRef_myTryId >>= liftIO . putMVar tryIdMVar
                       join $ callback <$> wrapJSVal this <*> traverse wrapJSVal args
                 try $ flip runReaderT syncEnv $ unJSM $
-                  run `catchError` (\v -> unsafeInlineLiftIO $
-                                   putStrLn "JavaScriptException happened in sync callback" >> throwIO (JavaScriptException v))
+                  run `catchError` (\v -> do
+                    exceptionStr <- T.unpack <$> valToText v
+                    unsafeInlineLiftIO $ putStrLn ("JavaScriptException happened in sync callback : " <> exceptionStr) >> throwIO (JavaScriptException v))
               case (reqs, reqQueueEmpty) of
                 ([], True) -> waitForYield -- Wait and send nonEmpty list if queue on JS side is empty
                 _ -> pure reqs
