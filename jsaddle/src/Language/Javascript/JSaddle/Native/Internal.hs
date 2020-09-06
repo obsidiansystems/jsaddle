@@ -39,16 +39,26 @@ module Language.Javascript.JSaddle.Native.Internal (
   , strictEqual
   , instanceOf
   , propertyNames
+  , globalRef
 ) where
 
 import Data.Aeson (Value)
 import qualified Data.Aeson as A
+import Data.IORef (newIORef)
 import Data.Text.Encoding (decodeUtf8)
 import qualified Data.ByteString.Lazy as LBS
+import System.IO.Unsafe
 
 import GHCJS.Prim.Internal
 import Language.Javascript.JSaddle.Types
-import Language.Javascript.JSaddle.Run
+
+-- | The RefId of the global object
+globalRefId :: RefId
+globalRefId = RefId 1
+
+globalRef :: Ref
+globalRef = unsafePerformIO $ Ref <$> newIORef globalRefId
+{-# NOINLINE globalRef #-}
 
 --TODO: Make JSString a JSVal under the hood
 setPropertyByName :: JSString -> JSVal -> Object -> JSM ()

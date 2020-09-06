@@ -39,7 +39,6 @@ module Language.Javascript.JSaddle.Run (
   , getJsonLazy
   , callAsFunction'
   , callAsConstructor'
-  , globalRef
 #endif
 ) where
 
@@ -60,23 +59,13 @@ import Data.Monoid ((<>))
 import Data.Map (Map)
 import Data.Maybe
 import qualified Data.Map as M
-import Data.IORef (newIORef)
 import qualified Data.Text as T
 import GHCJS.Prim.Internal (primToJSVal)
 
 import Language.Javascript.JSaddle.Types
 --TODO: Handle JS exceptions
 import Data.Foldable (forM_, traverse_, foldl')
-import System.IO.Unsafe
 import Language.Javascript.JSaddle.Monad (syncPoint)
-
--- | The RefId of the global object
-globalRefId :: RefId
-globalRefId = RefId 1
-
-globalRef :: Ref
-globalRef = unsafePerformIO $ Ref <$> newIORef globalRefId
-{-# NOINLINE globalRef #-}
 
 -- | The first dynamically-allocated RefId
 initialRefId :: RefId
