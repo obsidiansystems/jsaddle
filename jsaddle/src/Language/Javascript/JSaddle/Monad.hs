@@ -22,6 +22,7 @@ module Language.Javascript.JSaddle.Monad (
   , liftJSM
   , askJSM
   , runJSM
+  , runJSMCheap
   , syncPoint
   , syncAfter
   , waitForAnimationFrame
@@ -35,7 +36,7 @@ module Language.Javascript.JSaddle.Monad (
 
 import Control.Monad.IO.Class (MonadIO(..))
 import Control.Monad.Catch (catch, bracket)
-import Language.Javascript.JSaddle.Types (JSM(..), MonadJSM, liftJSM, askJSM, JSContextRef, runJSM)
+import Language.Javascript.JSaddle.Types (JSM(..), MonadJSM, liftJSM, askJSM, JSContextRef, runJSM, runJSMCheap)
 import Control.Concurrent.MVar (MVar, newMVar)
 import System.IO.Unsafe (unsafePerformIO)
 

@@ -42,6 +42,7 @@ module Language.Javascript.JSaddle.Types (
   , liftJSM
   , askJSM
   , runJSM
+  , runJSMCheap
   , JSContextRef (..)
 
   -- * pure GHCJS functions
@@ -363,9 +364,10 @@ instance Show JavaScriptException where
 
 instance Exception JavaScriptException
 
-runJSM :: MonadIO m => JSM a -> JSContextRef -> m a
+runJSM, runJSMCheap :: MonadIO m => JSM a -> JSContextRef -> m a
 #ifdef ghcjs_HOST_OS
 runJSM = const . liftIO
+runJSMCheap = runJSM
 #else
 runJSM a ctx = liftIO $ do
   threadId <- myThreadId
@@ -378,6 +380,16 @@ runJSM a ctx = liftIO $ do
   result <- flip runReaderT ctx' $ unJSM $ do
     catchError (Right <$> a) (return . Left)  -- <* waitForSync
   either (throwIO . JavaScriptException) return result
+
+runJSMCheap a ctx = liftIO $ do
+  threadId <- myThreadId
+  let ctx' = if _jsContextRef_syncThreadId ctx == Just threadId
+                then ctx
+                else ctx {
+                    _jsContextRef_syncThreadId = Nothing,
+                    _jsContextRef_waitForResults = Nothing,
+                    _jsContextRef_sendReq = _jsContextRef_sendReqAsync ctx }
+  flip runReaderT ctx' $ unJSM a
 #endif
 
 -- | Type used for Haskell functions called from JavaScript.
