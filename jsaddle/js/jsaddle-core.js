@@ -282,8 +282,6 @@ function jsaddle(global, sendRsp, processSyncCommand, RESPONSE_BUFFER_MAX_SIZE) 
       case 'CallAsConstructor':
         result(req.contents[2], new (Function.prototype.bind.apply(unwrapVal(req.contents[0]), [null].concat(req.contents[1].map(unwrapVal)))));
         break;
-      case 'Throw':
-        throw unwrapVal(req.contents[0]);
       case 'FinishTry':
         sendRspImmediate({
           'tag': 'FinishTry',

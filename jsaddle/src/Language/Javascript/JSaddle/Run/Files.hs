@@ -320,8 +320,6 @@ jsaddleCoreJs = "\
     \      case 'CallAsConstructor':\n\
     \        result(req.contents[2], new (Function.prototype.bind.apply(unwrapVal(req.contents[0]), [null].concat(req.contents[1].map(unwrapVal)))));\n\
     \        break;\n\
-    \      case 'Throw':\n\
-    \        throw unwrapVal(req.contents[0]);\n\
     \      case 'FinishTry':\n\
     \        sendRspImmediate({\n\
     \          'tag': 'FinishTry',\n\

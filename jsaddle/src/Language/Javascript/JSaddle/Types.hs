@@ -127,7 +127,7 @@ import GHCJS.Prim.Internal
 import Data.JSString.Internal.Type (JSString(..))
 import Data.Monoid
 import Control.Concurrent (myThreadId, ThreadId, threadDelay)
-import Control.Exception (Exception, throwIO)
+import Control.Exception (Exception, throwIO, SomeException)
 import Control.Monad (void)
 import Control.Monad.Catch (MonadThrow, MonadCatch(..), MonadMask(..), bracket_)
 import Control.Monad.Except
@@ -146,8 +146,8 @@ import Control.Monad.Trans.Writer.Lazy as Lazy (WriterT(..))
 import Control.Monad.Trans.Writer.Strict as Strict (WriterT(..))
 import Control.Monad.Trans.Class (MonadTrans(..))
 import Control.Monad.Fix (MonadFix)
-import Control.Concurrent.Async (withAsync, wait)
-import Control.Concurrent.STM.TVar (TVar)
+import Control.Concurrent.Async (withAsync, wait, race)
+import Control.Concurrent.STM.TVar (TVar, newTVarIO, modifyTVar', readTVarIO)
 import Control.Concurrent.MVar (MVar, swapMVar, modifyMVar, readMVar, tryTakeMVar, tryPutMVar)
 import Data.Bifunctor
 import Data.Bifoldable
@@ -174,6 +174,7 @@ import Control.Concurrent.STM.TVar
 import Control.Monad.Primitive
 import Control.Monad.IO.Unlift (MonadUnliftIO(..), UnliftIO(..))
 import qualified Control.Monad.Fail as Fail
+import System.Mem.Weak (Weak, deRefWeak, mkWeakPtr)
 #endif
 
 #if MIN_VERSION_base(4,9,0) && defined(CHECK_UNCHECKED)
@@ -206,6 +207,8 @@ data JSContextRef = JSContextRef
   , _jsContextRef_syncState :: !(MVar SyncState)
   , _jsContextRef_nextSyncReqId :: !(TVar SyncReqId)
   , _jsContextRef_syncReqs :: !(TVar (Map SyncReqId (MVar ())))
+  -- When executing in a sync frame, wait for results of these
+  , _jsContextRef_waitForResults :: !(Maybe (TVar [Weak JSVal]))
   }
 #endif
 
@@ -368,6 +371,7 @@ runJSM a ctx = liftIO $ do
                 then ctx
                 else ctx {
                     _jsContextRef_syncThreadId = Nothing,
+                    _jsContextRef_waitForResults = Nothing,
                     _jsContextRef_sendReq = _jsContextRef_sendReqAsync ctx }
   result <- flip runReaderT ctx' $ unJSM $ do
     catchError (Right <$> a) (return . Left)  -- <* waitForSync
@@ -469,7 +473,6 @@ data Req input output
    | Req_GetProperty input input output -- ^ @Req_SetProperty a b c@ ==> @c = b[a];@
    | Req_CallAsFunction input input [input] output
    | Req_CallAsConstructor input [input] output
-   | Req_Throw input
    | Req_FinishTry
    | Req_Sync SyncReqId
    | Req_TriggerSendRsp
@@ -493,7 +496,6 @@ instance Bitraversable Req where
     Req_GetProperty a b c -> Req_GetProperty <$> f a <*> f b <*> g c
     Req_CallAsFunction a b c d -> Req_CallAsFunction <$> f a <*> f b <*> traverse f c <*> g d
     Req_CallAsConstructor a b c -> Req_CallAsConstructor <$> f a <*> traverse f b <*> g c
-    Req_Throw a -> Req_Throw <$> f a
     Req_FinishTry -> pure Req_FinishTry
     Req_Sync s -> pure $ Req_Sync s
     Req_TriggerSendRsp -> pure Req_TriggerSendRsp
@@ -744,35 +746,70 @@ setProperty prop val obj = do
   sendReq $ Req_SetProperty prop val obj
 
 callAsFunction' :: JSVal -> JSVal -> [JSVal] -> JSM JSVal
-callAsFunction' f this args = withJSValOutput_ $ \ref -> do
-  sendReq $ Req_CallAsFunction f this args ref
+callAsFunction' f this args = do
+  res <- withJSValOutput_ $ \ref -> do
+    sendReq $ Req_CallAsFunction f this args ref
+  JSM $ (asks _jsContextRef_waitForResults >>=) $ mapM_ $ \tVar ->
+    -- This call can start a new sync-frame, so wait for its results in the current try block
+    liftIO $ mkWeakPtr res Nothing >>= (\wkPtr -> atomically $ modifyTVar' tVar ((:) wkPtr))
+  pure res
+
 
 callAsConstructor' :: JSVal -> [JSVal] -> JSM JSVal
 callAsConstructor' f args = withJSValOutput_ $ \ref -> do
   sendReq $ Req_CallAsConstructor f args ref
 
---Exceptions: it's pointless for Haskell-side to throw exceptions to javascript side asynchronously, but perhaps it should be allowed
 instance MonadError JSVal JSM where
   catchError a h = do
     tryId <- newId _jsContextRef_nextTryId
     tries <- JSM $ asks _jsContextRef_tries
     sendReqsBatchVar <- JSM $ asks _jsContextRef_sendReqsBatchVar
     finishVar <- JSM $ liftIO newEmptyMVar
+    asyncExceptionVar <- JSM $ liftIO newEmptyMVar
     JSM $ liftIO $ atomically $ modifyTVar' tries $ M.insert tryId finishVar
-    env <- JSM ask
-    let end = sendReq Req_FinishTry
-    tryResult <- JSM $ liftIO $ withAsync (runReaderT (unJSM (a <* end)) $ env { _jsContextRef_myTryId = tryId }) $ \aa -> do
-      --IDEA: Continue speculatively executing forward
+    env <- JSM $ do
+      oldEnv <- ask
+      let newEnv = oldEnv { _jsContextRef_myTryId = tryId }
+      case _jsContextRef_syncThreadId oldEnv of
+        Nothing -> pure newEnv
+        Just _ -> do
+          v <- liftIO $ newTVarIO []
+          pure $ newEnv { _jsContextRef_waitForResults = Just v }
+    let end = do
+          JSM $ (asks _jsContextRef_waitForResults >>=) $ mapM_ $ \tVar -> liftIO $ do
+            -- wait for results of these by doing getPrimJSVal
+            (readTVarIO tVar >>=) $ mapM_ $ \wkPtr -> do
+              (deRefWeak wkPtr >>=) $ mapM_ $ \jsVal -> case getPrimJSVal jsVal of { _ -> pure ()}
+          sendReq Req_FinishTry
+        action = (runReaderT (unJSM (a <* end)) env)
+          `catch` (\(e :: SomeException) -> do
+                      putMVar asyncExceptionVar e
+                      throwIO e)
+    tryResult <- JSM $ liftIO $ withAsync action $ \aa -> do
       void $ tryPutMVar sendReqsBatchVar ()
-      takeMVar finishVar >>= \case
-        Left e -> return $ Left e
-        Right _ -> Right <$> wait aa
+      -- we can miss either async exception or JavaScriptException
+      race
+        (takeMVar asyncExceptionVar)
+        (takeMVar finishVar >>= \case
+          Left e -> return (Left e)
+          Right _ -> Right <$> wait aa)
     case tryResult of
-      Left e -> h e
-      Right result -> return result
-  throwError e = do
-    sendReq $ Req_Throw e --IDEA: Short-circuit this rather than actually sending it to the JS side
-    JSM $ liftIO $ forever $ threadDelay maxBound
+      Left someException -> unsafeInlineLiftIO $ throwIO someException
+      Right finishRes -> case finishRes of
+        Left e -> h e
+        Right res -> pure res
+  throwError e = JSM $ do
+    tries <- asks _jsContextRef_tries
+    tid <- asks _jsContextRef_myTryId
+    liftIO $ do
+      mChildTryMVar <- atomically $ do
+        currentTries <- readTVar tries
+        writeTVar tries $! M.delete tid currentTries
+        return $ M.lookup tid currentTries
+      case mChildTryMVar of
+        Nothing -> pure () -- Could be a race with another exception or FinishTry req
+        Just v -> putMVar v $ Left e
+      forever $ threadDelay maxBound
 
 instance MonadIO JSM where
   liftIO a = do
