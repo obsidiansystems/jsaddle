@@ -98,6 +98,7 @@ module Language.Javascript.JSaddle.Types (
   , freeSyncCallback
   , newSyncCallback'
   , newSyncCallback''
+  , newAsyncCallback'
   , withJSValId
   , wrapJSVal
   , newJson
@@ -596,6 +597,14 @@ newSyncCallback'' f = do
   f' <- callbackToSyncFunction callbackId --TODO: "ContinueAsync" behavior
   callbacks <- JSM $ asks _jsContextRef_callbacks
   JSM $ liftIO $ atomically $ modifyTVar' callbacks $ M.insertWith (error "newSyncCallback: callbackId already exists") callbackId $ \this args -> f f' this args
+  return (callbackId, f')
+
+newAsyncCallback' :: JSCallAsFunction -> JSM (CallbackId, JSVal)
+newAsyncCallback' f = do
+  callbackId <- newId _jsContextRef_nextCallbackId
+  f' <- callbackToAsyncFunction callbackId --TODO: "ContinueAsync" behavior
+  callbacks <- JSM $ asks _jsContextRef_callbacks
+  JSM $ liftIO $ atomically $ modifyTVar' callbacks $ M.insertWith (error "newAsyncCallback: callbackId already exists") callbackId $ \this args -> f f' this args >> pure this -- The return value is not relevant for async callback
   return (callbackId, f')
 
 freeSyncCallback :: CallbackId -> JSM ()
