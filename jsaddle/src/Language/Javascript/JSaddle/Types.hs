@@ -524,7 +524,7 @@ instance FromJSON Rsp where
   parseJSON = A.genericParseJSON $ aesonOptions "Rsp"
 
 data SyncCommand
-   = SyncCommand_StartCallback CallbackId ValId [ValId] -- The input valIds here must always be allocated on the JS side --TODO: Make sure throwing stuff works when it ends up skipping over our own call stack entries
+   = SyncCommand_StartCallback Bool CallbackId ValId [ValId] -- The input valIds here must always be allocated on the JS side --TODO: Make sure throwing stuff works when it ends up skipping over our own call stack entries
    | SyncCommand_Continue
    deriving (Show, Read, Eq, Ord, Generic)
 

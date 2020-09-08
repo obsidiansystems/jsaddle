@@ -198,6 +198,7 @@ function jsaddle(global, sendRsp, processSyncCommand, RESPONSE_BUFFER_MAX_SIZE) 
     var newReqs = processSyncCommand({
       'tag': 'StartCallback',
       'contents': [
+        syncRequests.isEmpty(),
         callback,
         that,
         args

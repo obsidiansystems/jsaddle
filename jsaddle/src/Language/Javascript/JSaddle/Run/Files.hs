@@ -236,6 +236,7 @@ jsaddleCoreJs = "\
     \    var newReqs = processSyncCommand({\n\
     \      'tag': 'StartCallback',\n\
     \      'contents': [\n\
+    \        syncRequests.isEmpty(),\n\
     \        callback,\n\
     \        that,\n\
     \        args\n\

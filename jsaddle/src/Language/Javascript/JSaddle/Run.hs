@@ -198,6 +198,9 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
             (allResults, (newDepth, newReadyFrames)) = yieldAllReady (oldDepth, oldReadyFrames)
         requests <- reverse . snd <$> swapMVar yieldAccumVar (False, [])
         pure $ ((newDepth, newReadyFrames, oldFrameTries), allResults ++ requests)
+      waitForYield = do
+        takeMVar yieldReadyVar
+        yield
       processRsp = traverse_ $ \case
         Rsp_GetJson getJsonReqId val -> do
           reqs <- atomically $ do
@@ -278,25 +281,27 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
         , _jsContextRef_waitForResults = Nothing
         }
       processSyncCommand = \case
-        SyncCommand_StartCallback callbackId this args -> do
+        SyncCommand_StartCallback reqQueueEmpty callbackId this args -> do
           mCallback <- fmap (M.lookup callbackId) $ atomically $ readTVar callbacks
           case mCallback of
-            Just (callback :: JSVal -> [JSVal] -> JSM JSVal) -> tryEnterSyncFrame $ \myDepth tryIdMVar -> do
-              threadId <- myThreadId
-              syncStateLocal <- newMVar SyncState_InSync
-              let syncEnv = env { _jsContextRef_sendReq = enqueueSyncBlockRequest myDepth
-                                , _jsContextRef_syncThreadId = Just threadId
-                                , _jsContextRef_syncState = syncStateLocal }
-                  run = do
-                    JSM $ asks _jsContextRef_myTryId >>= liftIO . putMVar tryIdMVar
-                    join $ callback <$> wrapJSVal this <*> traverse wrapJSVal args
-              try $ flip runReaderT syncEnv $ unJSM $
-                run `catchError` (\v -> unsafeInlineLiftIO $
-                                 putStrLn "JavaScriptException happened in sync callback" >> throwIO (JavaScriptException v))
+            Just (callback :: JSVal -> [JSVal] -> JSM JSVal) -> do
+              reqs <- tryEnterSyncFrame $ \myDepth tryIdMVar -> do
+                threadId <- myThreadId
+                syncStateLocal <- newMVar SyncState_InSync
+                let syncEnv = env { _jsContextRef_sendReq = enqueueSyncBlockRequest myDepth
+                                  , _jsContextRef_syncThreadId = Just threadId
+                                  , _jsContextRef_syncState = syncStateLocal }
+                    run = do
+                      JSM $ asks _jsContextRef_myTryId >>= liftIO . putMVar tryIdMVar
+                      join $ callback <$> wrapJSVal this <*> traverse wrapJSVal args
+                try $ flip runReaderT syncEnv $ unJSM $
+                  run `catchError` (\v -> unsafeInlineLiftIO $
+                                   putStrLn "JavaScriptException happened in sync callback" >> throwIO (JavaScriptException v))
+              case (reqs, reqQueueEmpty) of
+                ([], True) -> waitForYield -- Wait and send nonEmpty list if queue on JS side is empty
+                _ -> pure reqs
             Nothing -> error $ "sync callback " <> show callbackId <> " called, but does not exist"
-        SyncCommand_Continue -> do
-          takeMVar yieldReadyVar
-          yield
+        SyncCommand_Continue -> waitForYield
   void $ forkIO doSendReqs
   return (processRsp, processSyncCommand, env)
 
