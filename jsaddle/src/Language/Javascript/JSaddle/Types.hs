@@ -570,8 +570,8 @@ instance FromJSON TryReq where
 -- | Perform IO from JSM without synchronizing with the JS side; since requests
 -- are heavily pipelined, this may result in unpredictable ordering of IO and JS
 -- operations, even within a single thread
-unsafeInlineLiftIO :: IO a -> JSM a
-unsafeInlineLiftIO = JSM . liftIO
+unsafeInlineLiftIO :: (MonadJSM m) => IO a -> m a
+unsafeInlineLiftIO = liftJSM . JSM . liftIO
 
 sync :: JSM a -> JSM a
 sync syncBlock = do
