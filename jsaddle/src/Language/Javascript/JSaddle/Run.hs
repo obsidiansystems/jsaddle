@@ -200,7 +200,17 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
         pure $ ((newDepth, newReadyFrames, oldFrameTries), allResults ++ requests)
       waitForYield = do
         takeMVar yieldReadyVar
-        yield
+        reqs <- yield
+        let shortCircuitReqs = map (canShortCircuitReq . snd) reqs
+            canShortCircuitReq = \case
+              SyncBlockReq_Req r -> case _tryReq_req r of
+                Req_FinishTry -> Just (Rsp_FinishTry (_tryReq_tryId r) (Right ()))
+                Req_Sync syncReqId -> Just (Rsp_Sync syncReqId)
+                _ -> Nothing
+              _ -> Nothing
+        if all isJust shortCircuitReqs
+          then processRsp (catMaybes shortCircuitReqs) >> waitForYield -- Short circuit all of the requests
+          else pure reqs
       processRsp = traverse_ $ \case
         Rsp_GetJson getJsonReqId val -> do
           reqs <- atomically $ do
