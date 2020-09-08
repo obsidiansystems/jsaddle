@@ -681,7 +681,7 @@ wrapRef :: RefId -> JSM Ref
 wrapRef valId = JSM $ do
   valRef <- liftIO $ newIORef valId
   -- Bind this strictly to avoid retaining the whole JSContextRef in the finalizer
-  !sendReq' <- asks _jsContextRef_sendReq
+  !sendReq' <- asks _jsContextRef_sendReqAsync
   void $ liftIO $ mkWeakIORef valRef $ do
     sendReq' $ TryReq
       { _tryReq_tryId = TryId 0 --TODO: This probably shouldn't even be a TryReq
