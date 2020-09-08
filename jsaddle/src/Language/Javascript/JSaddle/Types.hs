@@ -377,7 +377,7 @@ runJSM a ctx = liftIO $ do
                     _jsContextRef_sendReq = _jsContextRef_sendReqAsync ctx }
   result <- flip runReaderT ctx' $ unJSM $ do
     catchError (Right <$> a) (return . Left)  -- <* waitForSync
-  either (throwIO . JavaScriptException) return result
+  either throwIO return result
 #endif
 
 -- | Type used for Haskell functions called from JavaScript.
@@ -776,7 +776,7 @@ callAsConstructor' :: JSVal -> [JSVal] -> JSM JSVal
 callAsConstructor' f args = withJSValOutput_ $ \ref -> do
   sendReq $ Req_CallAsConstructor f args ref
 
-instance MonadError JSVal JSM where
+instance MonadError JavaScriptException JSM where
   catchError a h = do
     tryId <- newId _jsContextRef_nextTryId
     tries <- JSM $ asks _jsContextRef_tries
@@ -813,7 +813,7 @@ instance MonadError JSVal JSM where
     case tryResult of
       Left someException -> unsafeInlineLiftIO $ throwIO someException
       Right finishRes -> case finishRes of
-        Left e -> h e
+        Left e -> h (JavaScriptException e)
         Right res -> pure res
   throwError e = JSM $ do
     tries <- asks _jsContextRef_tries
@@ -825,7 +825,7 @@ instance MonadError JSVal JSM where
         return $ M.lookup tid currentTries
       case mChildTryMVar of
         Nothing -> pure () -- Could be a race with another exception or FinishTry req
-        Just v -> putMVar v $ Left e
+        Just v -> putMVar v $ Left $ unJavaScriptException e
       forever $ threadDelay maxBound
 
 instance MonadIO JSM where

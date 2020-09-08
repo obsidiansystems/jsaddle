@@ -295,9 +295,9 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
                       JSM $ asks _jsContextRef_myTryId >>= liftIO . putMVar tryIdMVar
                       join $ callback <$> wrapJSVal this <*> traverse wrapJSVal args
                 try $ flip runReaderT syncEnv $ unJSM $
-                  run `catchError` (\v -> do
-                    exceptionStr <- T.unpack <$> valToText v
-                    unsafeInlineLiftIO $ putStrLn ("JavaScriptException happened in sync callback : " <> exceptionStr) >> throwIO (JavaScriptException v))
+                  run `catchError` (\e -> do
+                    exceptionStr <- T.unpack <$> valToText (unJavaScriptException e)
+                    unsafeInlineLiftIO $ putStrLn ("JavaScriptException happened in sync callback : " <> exceptionStr) >> throwIO e)
               case (reqs, reqQueueEmpty) of
                 ([], True) -> waitForYield -- Wait and send nonEmpty list if queue on JS side is empty
                 _ -> pure reqs
