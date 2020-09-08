@@ -115,6 +115,7 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
   sendReqsBatchVar <- newMVar ()
   pendingReqs <- newTVarIO []
   pendingReqsCount <- newTVarIO (0 :: Int)
+  threadId <- myThreadId
   let enqueueSyncBlockRequest depth req = do
         doPutMVar <- modifyMVar yieldAccumVar $ \(resultReady, old) -> do
           let !new = (depth, SyncBlockReq_Req req) : old
@@ -268,6 +269,7 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
         , _jsContextRef_sendReqAsync = sendReqAsync
         , _jsContextRef_sendReqsBatchVar = sendReqsBatchVar
         , _jsContextRef_syncThreadId = Nothing
+        , _jsContextRef_myThreadId = threadId
         , _jsContextRef_nextRefId = nextRefId
         , _jsContextRef_nextGetJsonReqId = nextGetJsonReqId
         , _jsContextRef_getJsonReqs = getJsonReqs
@@ -292,6 +294,7 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
                 syncStateLocal <- newMVar SyncState_InSync
                 let syncEnv = env { _jsContextRef_sendReq = enqueueSyncBlockRequest myDepth
                                   , _jsContextRef_syncThreadId = Just threadId
+                                  , _jsContextRef_myThreadId = threadId
                                   , _jsContextRef_syncState = syncStateLocal }
                     run = do
                       JSM $ asks _jsContextRef_myTryId >>= liftIO . putMVar tryIdMVar
