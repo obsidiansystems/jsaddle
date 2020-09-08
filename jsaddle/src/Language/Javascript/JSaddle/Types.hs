@@ -149,7 +149,7 @@ import Control.Monad.Trans.Class (MonadTrans(..))
 import Control.Monad.Fix (MonadFix)
 import Control.Concurrent.Async (withAsync, wait, race)
 import Control.Concurrent.STM.TVar (TVar, newTVarIO, modifyTVar', readTVarIO)
-import Control.Concurrent.MVar (MVar, swapMVar, modifyMVar, readMVar, tryTakeMVar, tryPutMVar)
+import Control.Concurrent.MVar (MVar, swapMVar, modifyMVar, readMVar, tryTakeMVar, tryPutMVar, newMVar)
 import Data.Bifunctor
 import Data.Bifoldable
 import Data.Bitraversable
@@ -196,6 +196,7 @@ data JSContextRef = JSContextRef
   { _jsContextRef_sendReq :: !(TryReq -> IO ())
   , _jsContextRef_sendReqAsync :: !(TryReq -> IO ())
   , _jsContextRef_sendReqsBatchVar :: !(MVar ())
+  , _jsContextRef_myThreadId :: !(ThreadId)
   , _jsContextRef_syncThreadId :: Maybe (ThreadId)
   , _jsContextRef_nextRefId :: !(TVar RefId)
   , _jsContextRef_nextGetJsonReqId :: !(TVar GetJsonReqId)
@@ -369,12 +370,16 @@ runJSM = const . liftIO
 #else
 runJSM a ctx = liftIO $ do
   threadId <- myThreadId
-  let ctx' = if _jsContextRef_syncThreadId ctx == Just threadId
-                then ctx
-                else ctx {
-                    _jsContextRef_syncThreadId = Nothing,
-                    _jsContextRef_waitForResults = Nothing,
-                    _jsContextRef_sendReq = _jsContextRef_sendReqAsync ctx }
+  ctx' <- if _jsContextRef_myThreadId ctx == threadId
+    then pure ctx
+    else do
+      syncStateLocal <- newMVar SyncState_InSync
+      pure $ ctx {
+        _jsContextRef_syncState = syncStateLocal,
+        _jsContextRef_myThreadId = threadId,
+        _jsContextRef_syncThreadId = Nothing,
+        _jsContextRef_waitForResults = Nothing,
+        _jsContextRef_sendReq = _jsContextRef_sendReqAsync ctx }
   result <- flip runReaderT ctx' $ unJSM $ do
     catchError (Right <$> a) (return . Left)  -- <* waitForSync
   either throwIO return result
