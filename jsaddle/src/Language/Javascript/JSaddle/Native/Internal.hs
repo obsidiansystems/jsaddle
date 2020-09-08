@@ -102,7 +102,7 @@ newEmptyObject = Object <$> newJson (A.Object mempty)
 {-# INLINE newEmptyObject #-}
 
 newAsyncCallback :: JSCallAsFunction -> JSM (CallbackId, JSVal)
-newAsyncCallback = newSyncCallback'
+newAsyncCallback = newAsyncCallback'
 {-# INLINE newAsyncCallback #-}
 
 newSyncCallback :: JSCallAsFunction -> JSM (CallbackId, JSVal)
