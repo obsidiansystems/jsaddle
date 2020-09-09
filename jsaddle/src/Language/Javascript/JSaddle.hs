@@ -67,7 +67,6 @@ import GHCJS.Marshal as JSaddle
 import Language.Javascript.JSaddle.Types as JSaddle
 import Language.Javascript.JSaddle.Classes as JSaddle
 import Language.Javascript.JSaddle.Marshal.String as JSaddle ()
-import Language.Javascript.JSaddle.Monad as JSaddle
 import Language.Javascript.JSaddle.Value as JSaddle
 import Language.Javascript.JSaddle.Arguments as JSaddle ()
 import Language.Javascript.JSaddle.Properties as JSaddle

@@ -31,8 +31,7 @@ module Language.Javascript.JSaddle.Properties (
   , objSetPropertyAtIndex
 ) where
 
-import Language.Javascript.JSaddle.Monad (JSM)
-import Language.Javascript.JSaddle.Types (JSVal, Object(..))
+import Language.Javascript.JSaddle.Types (JSM, JSVal, Object(..))
 import JavaScript.Object.Internal (getProp, unsafeGetProp, setProp, unsafeSetProp)
 #ifdef ghcjs_HOST_OS
 import GHCJS.Marshal (ToJSVal(..))
