@@ -112,7 +112,6 @@ module Language.Javascript.JSaddle.Types (
   , getJsonLazy
   , callAsFunction'
   , callAsConstructor'
-  , withLog
   , unsafeInlineLiftIO
 #endif
 ) where
@@ -132,7 +131,7 @@ import Data.Monoid
 import Control.Concurrent (myThreadId, ThreadId, threadDelay)
 import Control.Exception (Exception, throwIO, SomeException)
 import Control.Monad (void)
-import Control.Monad.Catch (MonadThrow, MonadCatch(..), MonadMask(..), bracket_)
+import Control.Monad.Catch (MonadThrow, MonadCatch(..), MonadMask(..))
 import Control.Monad.Except
 import Control.Monad.Trans.Cont (ContT(..))
 import Control.Monad.Trans.Error (Error(..), ErrorT(..))
@@ -878,9 +877,6 @@ instance MonadRef JSM where
 
 instance MonadAtomicRef JSM where
     atomicModifyRef r = liftIO . MonadRef.atomicModifyRef r
-
-withLog :: String -> IO a -> IO a
-withLog s = bracket_ (putStrLn $ s <> ": enter") (putStrLn $ s <> ": exit")
 
 data SyncState
    = SyncState_InSync -- We are in sync with the JS engine
