@@ -524,7 +524,10 @@ instance FromJSON Rsp where
   parseJSON = A.genericParseJSON $ aesonOptions "Rsp"
 
 data SyncCommand
-   = SyncCommand_StartCallback Bool CallbackId ValId [ValId] -- The input valIds here must always be allocated on the JS side --TODO: Make sure throwing stuff works when it ends up skipping over our own call stack entries
+   = SyncCommand_StartCallback Bool CallbackId ValId [ValId]
+   -- ^ Bool indicates if the request queue is empty when the StartCallback happened
+   -- The input valIds here must always be allocated on the JS side
+   -- TODO: Make sure throwing stuff works when it ends up skipping over our own call stack entries
    | SyncCommand_Continue
    deriving (Show, Read, Eq, Ord, Generic)
 
@@ -537,7 +540,7 @@ instance FromJSON SyncCommand where
 data SyncBlockReq
   = SyncBlockReq_Req TryReq
   | SyncBlockReq_Result ValId
-  | SyncBlockReq_Throw Int Text
+  | SyncBlockReq_Throw Int Text -- ^ Int is the frame depth which should receive throw
    deriving (Generic)
 
 instance ToJSON SyncBlockReq where
