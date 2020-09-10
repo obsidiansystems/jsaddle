@@ -72,7 +72,7 @@ import Language.Javascript.JSaddle.Monad (syncPoint)
 initialRefId :: RefId
 initialRefId = RefId 2
 
-type CallbackResult = Either SomeException JSVal
+type CallbackResult = Either SomeException (Either JavaScriptException JSVal)
 
 runJavaScript
   :: ([TryReq] -> IO ()) -- ^ Send a batch of requests to the JS engine; we assume that requests are performed in the order they are sent; requests received while in a synchronous block must not be processed until the synchronous block ends (i.e. until the JS side receives the final value yielded back from the synchronous block)
@@ -133,7 +133,7 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
           -- these are sent immediately
           new
             | not startingNewFrame =
-              (succ oldDepth, SyncBlockReq_Throw (succ oldDepth) ("AsyncCancelled: Lower frame has exception")) : (reverse old)
+              (succ oldDepth, SyncBlockReq_Throw (succ oldDepth) (Left "AsyncCancelled: Lower frame has exception")) : (reverse old)
             | otherwise = reverse old
           !newDepth = if startingNewFrame then succ oldDepth else oldDepth
         newFrameTries <- if startingNewFrame
@@ -151,12 +151,14 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
         -- Just store our value so it can be yielded later
         _ -> do
           !syncBlockReq <- case myRetVal of
-            Left e -> pure $ SyncBlockReq_Throw myDepth (T.pack $ show e)
+            Left e -> pure $ SyncBlockReq_Throw myDepth (Left $ T.pack $ show e)
             -- Even though the valId is escaping, this is safe because we know that our yielded value will
             -- go out before any potential FreeVal request could go out
             -- The FreeVal request using this 'env' will be done async after all sync frames.
-            Right v -> flip runReaderT env $ unJSM $ withJSValId v $ \retValId -> do
-              pure $ SyncBlockReq_Result retValId
+            Right v -> flip runReaderT env $ unJSM $ withJSValId (either unJavaScriptException id v) $ \retValId -> do
+              pure $ case v of
+                Left _ -> SyncBlockReq_Throw myDepth (Right retValId)
+                Right _ -> SyncBlockReq_Result retValId
           let !newReadyFrames = M.insertWith (error "should be impossible: trying to return from a sync frame that has already returned") myDepth syncBlockReq oldReadyFrames
           !newFrameTries <- case myRetVal of
             Right _ -> pure (M.delete myDepth oldFrameTries)
@@ -293,11 +295,11 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
                                   , _jsContextRef_syncState = syncStateLocal }
                     run = do
                       JSM $ asks _jsContextRef_myTryId >>= liftIO . putMVar tryIdMVar
-                      join $ callback <$> wrapJSVal this <*> traverse wrapJSVal args
+                      (Right <$>) $ join $ callback <$> wrapJSVal this <*> traverse wrapJSVal args
                 try $ flip runReaderT syncEnv $ unJSM $
                   run `catchError` (\e -> do
                     exceptionStr <- T.unpack <$> valToText (unJavaScriptException e)
-                    unsafeInlineLiftIO $ putStrLn ("JavaScriptException happened in sync callback : " <> exceptionStr) >> throwIO e)
+                    unsafeInlineLiftIO $ putStrLn ("JavaScriptException happened in sync callback : " <> exceptionStr) >> pure (Left e))
               case (reqs, reqQueueEmpty) of
                 ([], True) -> waitForYield -- Wait and send nonEmpty list if queue on JS side is empty
                 _ -> pure reqs

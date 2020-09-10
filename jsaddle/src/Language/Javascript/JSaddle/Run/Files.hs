@@ -289,7 +289,11 @@ jsaddleCoreJs = "\
     \        }\n\
     \        syncRequests.enqueueArray(validReqs);\n\
     \        syncDepth--;\n\
-    \        throw syncReq.contents[1];\n\
+    \        if (syncReq.contents[1].Left) {\n\
+    \          throw syncReq.contents[1].Left;\n\
+    \        } else {\n\
+    \          throw unwrapVal(syncReq.contents[1].Right);\n\
+    \        }\n\
     \      default:\n\
     \        throw 'runSyncCallback: unknown request tag ' + JSON.stringify(syncReq.tag);\n\
     \      }\n\

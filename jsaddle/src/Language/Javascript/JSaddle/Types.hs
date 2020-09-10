@@ -540,7 +540,7 @@ instance FromJSON SyncCommand where
 data SyncBlockReq
   = SyncBlockReq_Req TryReq
   | SyncBlockReq_Result ValId
-  | SyncBlockReq_Throw Int Text -- ^ Int is the frame depth which should receive throw
+  | SyncBlockReq_Throw Int (Either Text ValId) -- ^ Int is the frame depth which should receive throw
    deriving (Generic)
 
 instance ToJSON SyncBlockReq where

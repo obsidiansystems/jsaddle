@@ -251,7 +251,11 @@ function jsaddle(global, sendRsp, processSyncCommand, RESPONSE_BUFFER_MAX_SIZE) 
         }
         syncRequests.enqueueArray(validReqs);
         syncDepth--;
-        throw syncReq.contents[1];
+        if (syncReq.contents[1].Left) {
+          throw syncReq.contents[1].Left;
+        } else {
+          throw unwrapVal(syncReq.contents[1].Right);
+        }
       default:
         throw 'runSyncCallback: unknown request tag ' + JSON.stringify(syncReq.tag);
       }
