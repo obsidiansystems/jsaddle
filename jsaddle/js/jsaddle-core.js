@@ -185,8 +185,7 @@ function jsaddle(global, sendRsp, processSyncCommand, RESPONSE_BUFFER_MAX_SIZE) 
         throw "processAllEnqueuedReqs: syncReq is not SyncBlockReq_Req; this should never happen because Result/Throw should only be sent while a synchronous request is still in progress";
       }
       if (tuple[0] > syncDepth) {
-        console.warn ("processAllEnqueuedReqs: queue contains a request for a frame which has exited");
-        continue;
+        throw "processAllEnqueuedReqs: queue contains a request for a frame which has exited";
       }
       processSingleReq(syncReq.contents);
     }
@@ -243,6 +242,14 @@ function jsaddle(global, sendRsp, processSyncCommand, RESPONSE_BUFFER_MAX_SIZE) 
           console.error("Received throw for wrong syncDepth: ", syncDepth, syncReq.contents[0]);
           continue;
         };
+        var validReqs = [];
+        while (!syncRequests.isEmpty()) {
+          var tuple = syncRequests.dequeue();
+          if (tuple[0] !== syncDepth) {
+            validReqs.push(tuple);
+          }
+        }
+        syncRequests.enqueueArray(validReqs);
         syncDepth--;
         throw syncReq.contents[1];
       default:
