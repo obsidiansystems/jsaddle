@@ -283,6 +283,8 @@ jsaddleCoreJs = "\
     \        };\n\
     \        syncDepth--;\n\
     \        throw syncReq.contents[1];\n\
+    \      default:\n\
+    \        throw 'runSyncCallback: unknown request tag ' + JSON.stringify(syncReq.tag);\n\
     \      }\n\
     \    }\n\
     \  };\n\

@@ -245,6 +245,8 @@ function jsaddle(global, sendRsp, processSyncCommand, RESPONSE_BUFFER_MAX_SIZE) 
         };
         syncDepth--;
         throw syncReq.contents[1];
+      default:
+        throw 'runSyncCallback: unknown request tag ' + JSON.stringify(syncReq.tag);
       }
     }
   };
