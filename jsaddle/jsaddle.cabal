@@ -99,7 +99,6 @@ library
         Language.Javascript.JSaddle.Evaluate
         Language.Javascript.JSaddle.Helper
         Language.Javascript.JSaddle.Marshal.String
-        Language.Javascript.JSaddle.Monad
         Language.Javascript.JSaddle.Object
         Language.Javascript.JSaddle.Properties
         Language.Javascript.JSaddle.Run

@@ -112,7 +112,6 @@ module Language.Javascript.JSaddle.Types (
   , getJsonLazy
   , callAsFunction'
   , callAsConstructor'
-  , withLog
   , unsafeInlineLiftIO
 #endif
 ) where
@@ -132,7 +131,7 @@ import Data.Monoid
 import Control.Concurrent (myThreadId, ThreadId, threadDelay)
 import Control.Exception (Exception, throwIO, SomeException)
 import Control.Monad (void)
-import Control.Monad.Catch (MonadThrow, MonadCatch(..), MonadMask(..), bracket_)
+import Control.Monad.Catch (MonadThrow, MonadCatch(..), MonadMask(..))
 import Control.Monad.Except
 import Control.Monad.Trans.Cont (ContT(..))
 import Control.Monad.Trans.Error (Error(..), ErrorT(..))
@@ -228,7 +227,8 @@ data JSContextRef = JSContextRef
 #ifdef ghcjs_HOST_OS
 type JSM = IO
 #else
-newtype JSM a = JSM { unJSM :: ReaderT JSContextRef IO a } deriving (Functor, Applicative, Monad, MonadFix, MonadThrow, Fail.MonadFail)
+newtype JSM a = JSM { unJSM :: ReaderT JSContextRef IO a }
+  deriving (Functor, Applicative, Monad, MonadFix, MonadThrow, Fail.MonadFail, MonadMask, MonadCatch)
 #endif
 
 -- | Type we can give to functions that are pure when using ghcjs, but
@@ -877,30 +877,6 @@ instance MonadRef JSM where
 
 instance MonadAtomicRef JSM where
     atomicModifyRef r = liftIO . MonadRef.atomicModifyRef r
-
---TODO: Figure out what syncAfter was doing in MonadCatch and MonadMask, and do that
-instance MonadCatch JSM where
-    t `catch` c = JSM (unJSM t `catch` \e -> unJSM (c e))
-
-instance MonadMask JSM where
-  mask a = JSM $ mask $ \unmask -> unJSM (a $ q unmask)
-    where q :: (ReaderT JSContextRef IO a -> ReaderT JSContextRef IO a) -> JSM a -> JSM a
-          q unmask (JSM b) = JSM $ unmask b
-  uninterruptibleMask a =
-    JSM $ uninterruptibleMask $ \unmask -> unJSM (a $ q unmask)
-      where q :: (ReaderT JSContextRef IO a -> ReaderT JSContextRef IO a) -> JSM a -> JSM a
-            q unmask (JSM b) = JSM $ unmask b
-#if MIN_VERSION_exceptions(0,9,0)
-  -- TODO: Fix syncAfter and enable this
-  -- generalBracket acquire release use =
-  --   JSM $ generalBracket
-  --     (unJSM acquire)
-  --     (\resource exitCase -> unJSM $ release resource exitCase)
-  --     (unJSM . syncAfter . use)
-#endif
-
-withLog :: String -> IO a -> IO a
-withLog s = bracket_ (putStrLn $ s <> ": enter") (putStrLn $ s <> ": exit")
 
 data SyncState
    = SyncState_InSync -- We are in sync with the JS engine

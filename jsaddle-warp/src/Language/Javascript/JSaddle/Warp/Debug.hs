@@ -10,13 +10,12 @@ module Language.Javascript.JSaddle.Warp.Debug
 
 import Control.Monad (when, void)
 import Language.Javascript.JSaddle.Debug (addContext, removeContext)
-import Language.Javascript.JSaddle.Monad
 import Control.Concurrent.MVar (MVar, newEmptyMVar, newMVar, modifyMVar_, readMVar, putMVar, modifyMVar, tryPutMVar, takeMVar, tryTakeMVar)
 import Control.Monad.IO.Class (liftIO)
 import Control.Concurrent (forkIO, threadDelay, killThread)
 import Control.Exception (finally)
 import Language.Javascript.JSaddle.WebSockets
-import Language.Javascript.JSaddle.Types (JSM)
+import Language.Javascript.JSaddle.Types (JSM, askJSM)
 import Network.Wai.Handler.Warp (runSettings, setPort, setTimeout, defaultSettings)
 import Network.Wai
        (Middleware, Response, ResponseReceived, Application)
@@ -43,7 +42,7 @@ debugOr :: Int -> JSM () -> Application -> IO ()
 debugOr port f b = do
     debugWrapper $ \withRefresh registerContext ->
         runSettings (setPort port (setTimeout 3600 defaultSettings)) =<<
-            jsaddleOr defaultConnectionOptions (registerContext >> f >> syncPoint) (withRefresh $ jsaddleAppWithJsOr (jsaddleJs True) b)
+            jsaddleOr defaultConnectionOptions (registerContext >> f) (withRefresh $ jsaddleAppWithJsOr (jsaddleJs True) b)
     putStrLn $ "<a href=\"http://localhost:" <> show port <> "\">run</a>"
 
 refreshMiddleware :: ((Response -> IO ResponseReceived) -> IO ResponseReceived) -> Middleware

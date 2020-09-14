@@ -88,7 +88,7 @@ import Data.JSString.Text (textToJSString)
 
 #ifdef ghcjs_HOST_OS
 import Language.Javascript.JSaddle.Types
-       (Object(..), JSString(..), JSVal(..), ghcjsPure)
+       (Object(..), JSM, JSString(..), JSVal(..), ghcjsPure)
 import GHCJS.Marshal (ToJSVal(..))
 #else
 import Data.Char (chr, ord)
@@ -96,13 +96,12 @@ import Data.Word (Word, Word8, Word16, Word32)
 import Data.Int (Int8, Int16, Int32)
 import GHCJS.Marshal.Internal (ToJSVal(..), FromJSVal(..))
 import Language.Javascript.JSaddle.Types
-       (Object(..), JSString(..), JSVal(..), ghcjsPure)
+       (Object(..), JSM, JSString(..), JSVal(..), ghcjsPure)
 import Language.Javascript.JSaddle.Native
        (valueToNumber, valueToString, valueToJSON, numberToValue, stringToValue, jsonValueToValue)
 import qualified Language.Javascript.JSaddle.Native as N
        (strictEqual, instanceOf)
 #endif
-import Language.Javascript.JSaddle.Monad (JSM)
 import Language.Javascript.JSaddle.Classes
        (MakeObject(..), MakeArgs(..))
 import Language.Javascript.JSaddle.Marshal.String (ToJSString(..), FromJSString(..))

@@ -109,18 +109,16 @@ import JavaScript.Array (MutableJSArray)
 import qualified JavaScript.Array as Array (toListIO, fromListIO)
 import JavaScript.Array.Internal (SomeJSArray(..))
 import JavaScript.Object (create, listProps)
-import Language.Javascript.JSaddle.Monad (JSM)
 import Language.Javascript.JSaddle.Types
-       (JSString, Object(..),
+       (JSString, Object(..), JSM,
         JSVal(..), JSCallAsFunction)
 #else
 import GHCJS.Marshal.Internal (ToJSVal(..))
 import Language.Javascript.JSaddle.Native
        (newAsyncCallback, newSyncCallback, callAsFunction, callAsConstructor, globalRef)
-import Language.Javascript.JSaddle.Monad (JSM)
 import Language.Javascript.JSaddle.Types
        (JSString, Object(..), CallbackId, PrimVal(..),
-        SomeJSArray(..), JSVal(..), JSCallAsFunction)
+        SomeJSArray(..), JSM, JSVal(..), JSCallAsFunction)
 import JavaScript.Object.Internal (create, listProps)
 import Language.Javascript.JSaddle.Run
 import GHCJS.Prim.Internal (primToJSVal)
