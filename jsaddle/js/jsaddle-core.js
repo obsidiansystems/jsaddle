@@ -1,4 +1,4 @@
-function jsaddle(global, sendRsp, processSyncCommand, RESPONSE_BUFFER_MAX_SIZE) {
+function jsaddleCoreJs(global, sendRsp, processSyncCommand, RESPONSE_BUFFER_MAX_SIZE) {
   /*
 
   Queue.js

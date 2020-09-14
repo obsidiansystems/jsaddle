@@ -97,7 +97,6 @@ library
         Language.Javascript.JSaddle.Classes
         Language.Javascript.JSaddle.Classes.Internal
         Language.Javascript.JSaddle.Evaluate
-        Language.Javascript.JSaddle.Exception
         Language.Javascript.JSaddle.Helper
         Language.Javascript.JSaddle.Marshal.String
         Language.Javascript.JSaddle.Monad

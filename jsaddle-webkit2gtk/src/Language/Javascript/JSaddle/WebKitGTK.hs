@@ -179,7 +179,7 @@ addJSaddleHandler webView processResult processSyncCommand = do
 jsaddleJs :: LB.ByteString
 jsaddleJs = jsaddleCoreJs <> ghcjsHelpers <> LBC8.unlines
     [ "runJSaddleBatch = (function() {"
-    , "  var core = jsaddle(window, function(req) {"
+    , "  var core = jsaddleCoreJs(window, function(req) {"
     , "    window.webkit.messageHandlers.jsaddle.postMessage(JSON.stringify(req));"
     , "  }, function(v) {"
     , "    return JSON.parse(window.prompt(\"JSaddleSync\", JSON.stringify(v)));"

@@ -36,7 +36,7 @@ indexHtml =
 -- (on linux, use xsel -bi instead of pbcopy)
 jsaddleCoreJs :: ByteString
 jsaddleCoreJs = "\
-    \function jsaddle(global, sendRsp, processSyncCommand, RESPONSE_BUFFER_MAX_SIZE) {\n\
+    \function jsaddleCoreJs(global, sendRsp, processSyncCommand, RESPONSE_BUFFER_MAX_SIZE) {\n\
     \  /*\n\
     \\n\
     \  Queue.js\n\

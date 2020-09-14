@@ -137,7 +137,7 @@ pokeAppConfig ptr cfg = poke ptr =<< appConfigToAppCallbacks cfg
 jsaddleJs :: ByteString
 jsaddleJs = jsaddleCoreJs <> ghcjsHelpers <> "\n\
     \runJSaddleBatch = (function() {\n\
-    \  var core = jsaddle(window, function(req) {\n\
+    \  var core = jsaddleCoreJs(window, function(req) {\n\
     \    jsaddleCallbacks.postMessage(JSON.stringify(req));\n\
     \  }, function(v) {\n\
     \    return JSON.parse(jsaddleCallbacks.syncMessage(JSON.stringify(v)));\n\
