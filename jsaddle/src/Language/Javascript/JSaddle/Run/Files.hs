@@ -214,33 +214,53 @@ jsaddleCoreJs = "\
     \    }\n\
     \    return syncRequests.dequeue();\n\
     \  };\n\
+    \  var syncDepth = 0;\n\
     \  var processAllEnqueuedReqs = function() {\n\
     \    while(!syncRequests.isEmpty()) {\n\
-    \      var req = syncRequests.dequeue();\n\
-    \      if(!req.Right) {\n\
-    \        throw \"processAllEnqueuedReqs: req is not Right; this should never happen because Lefts should only be sent while a synchronous request is still in progress\";\n\
+    \      var tuple = syncRequests.dequeue();\n\
+    \      var syncReq = tuple[1];\n\
+    \      if(syncReq.tag !== 'Req') {\n\
+    \        throw \"processAllEnqueuedReqs: syncReq is not SyncBlockReq_Req; this should never happen because Result/Throw should only be sent while a synchronous request is still in progress\";\n\
     \      }\n\
-    \      processSingleReq(req.Right);\n\
+    \      if (tuple[0] > syncDepth) {\n\
+    \        throw \"processAllEnqueuedReqs: queue contains a request for a frame which has exited\";\n\
+    \      }\n\
+    \      processSingleReq(syncReq.contents);\n\
     \    }\n\
     \  };\n\
-    \  var syncDepth = 0;\n\
     \  var runSyncCallback = function(callback, that, args) {\n\
     \    // Make sure all pending responses are sent\n\
     \    doSendRsp();\n\
     \    syncDepth++;\n\
-    \    syncRequests.enqueueArray(processSyncCommand({\n\
+    \    var newReqs = processSyncCommand({\n\
     \      'tag': 'StartCallback',\n\
     \      'contents': [\n\
+    \        syncRequests.isEmpty(),\n\
     \        callback,\n\
     \        that,\n\
     \        args\n\
     \      ]\n\
-    \    }));\n\
-    \    while(true) {\n\
-    \      var rsp = getNextSyncRequest();\n\
-    \      if(rsp.Right) {\n\
-    \        processSingleReq(rsp.Right);\n\
+    \    });\n\
+    \    if (newReqs.length > 0) {\n\
+    \      if ((newReqs[0][1].tag === 'Throw') && (newReqs[0][0] === syncDepth)) {\n\
+    \        // If we receive the first request as Throw, it means that StartCallback did not happen\n\
+    \        // So throw immediately\n\
+    \        var tuple = newReqs.shift();\n\
+    \        syncRequests.enqueueArray(newReqs);\n\
+    \        syncDepth--;\n\
+    \        throw tuple[1].contents[1];\n\
     \      } else {\n\
+    \        syncRequests.enqueueArray(newReqs);\n\
+    \      }\n\
+    \    }\n\
+    \    while(true) {\n\
+    \      var tuple = getNextSyncRequest();\n\
+    \      var syncReq = tuple[1];\n\
+    \      switch (syncReq.tag) {\n\
+    \      case 'Req':\n\
+    \        processSingleReq(syncReq.contents);\n\
+    \        break;\n\
+    \      case 'Result':\n\
     \        syncDepth--;\n\
     \        if(syncDepth === 0 && !syncRequests.isEmpty()) {\n\
     \          // Ensure that all remaining sync requests are cleared out in a timely\n\
@@ -253,7 +273,29 @@ jsaddleCoreJs = "\
     \          // returning first, it won't be available\n\
     \          setTimeout(processAllEnqueuedReqs, 0);\n\
     \        }\n\
-    \        return rsp.Left;\n\
+    \        return syncReq.contents[0];\n\
+    \      case 'Throw':\n\
+    \        // Ensure we are throwing at the right depth\n\
+    \        if (syncDepth !== syncReq.contents[0]) {\n\
+    \          console.error(\"Received throw for wrong syncDepth: \", syncDepth, syncReq.contents[0]);\n\
+    \          continue;\n\
+    \        };\n\
+    \        var validReqs = [];\n\
+    \        while (!syncRequests.isEmpty()) {\n\
+    \          var tuple = syncRequests.dequeue();\n\
+    \          if (tuple[0] !== syncDepth) {\n\
+    \            validReqs.push(tuple);\n\
+    \          }\n\
+    \        }\n\
+    \        syncRequests.enqueueArray(validReqs);\n\
+    \        syncDepth--;\n\
+    \        if (syncReq.contents[1].Left) {\n\
+    \          throw syncReq.contents[1].Left;\n\
+    \        } else {\n\
+    \          throw unwrapVal(syncReq.contents[1].Right);\n\
+    \        }\n\
+    \      default:\n\
+    \        throw 'runSyncCallback: unknown request tag ' + JSON.stringify(syncReq.tag);\n\
     \      }\n\
     \    }\n\
     \  };\n\

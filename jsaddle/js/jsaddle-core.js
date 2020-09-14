@@ -176,33 +176,53 @@ function jsaddle(global, sendRsp, processSyncCommand, RESPONSE_BUFFER_MAX_SIZE) 
     }
     return syncRequests.dequeue();
   };
+  var syncDepth = 0;
   var processAllEnqueuedReqs = function() {
     while(!syncRequests.isEmpty()) {
-      var req = syncRequests.dequeue();
-      if(!req.Right) {
-        throw "processAllEnqueuedReqs: req is not Right; this should never happen because Lefts should only be sent while a synchronous request is still in progress";
+      var tuple = syncRequests.dequeue();
+      var syncReq = tuple[1];
+      if(syncReq.tag !== 'Req') {
+        throw "processAllEnqueuedReqs: syncReq is not SyncBlockReq_Req; this should never happen because Result/Throw should only be sent while a synchronous request is still in progress";
       }
-      processSingleReq(req.Right);
+      if (tuple[0] > syncDepth) {
+        throw "processAllEnqueuedReqs: queue contains a request for a frame which has exited";
+      }
+      processSingleReq(syncReq.contents);
     }
   };
-  var syncDepth = 0;
   var runSyncCallback = function(callback, that, args) {
     // Make sure all pending responses are sent
     doSendRsp();
     syncDepth++;
-    syncRequests.enqueueArray(processSyncCommand({
+    var newReqs = processSyncCommand({
       'tag': 'StartCallback',
       'contents': [
+        syncRequests.isEmpty(),
         callback,
         that,
         args
       ]
-    }));
-    while(true) {
-      var rsp = getNextSyncRequest();
-      if(rsp.Right) {
-        processSingleReq(rsp.Right);
+    });
+    if (newReqs.length > 0) {
+      if ((newReqs[0][1].tag === 'Throw') && (newReqs[0][0] === syncDepth)) {
+        // If we receive the first request as Throw, it means that StartCallback did not happen
+        // So throw immediately
+        var tuple = newReqs.shift();
+        syncRequests.enqueueArray(newReqs);
+        syncDepth--;
+        throw tuple[1].contents[1];
       } else {
+        syncRequests.enqueueArray(newReqs);
+      }
+    }
+    while(true) {
+      var tuple = getNextSyncRequest();
+      var syncReq = tuple[1];
+      switch (syncReq.tag) {
+      case 'Req':
+        processSingleReq(syncReq.contents);
+        break;
+      case 'Result':
         syncDepth--;
         if(syncDepth === 0 && !syncRequests.isEmpty()) {
           // Ensure that all remaining sync requests are cleared out in a timely
@@ -215,7 +235,29 @@ function jsaddle(global, sendRsp, processSyncCommand, RESPONSE_BUFFER_MAX_SIZE) 
           // returning first, it won't be available
           setTimeout(processAllEnqueuedReqs, 0);
         }
-        return rsp.Left;
+        return syncReq.contents[0];
+      case 'Throw':
+        // Ensure we are throwing at the right depth
+        if (syncDepth !== syncReq.contents[0]) {
+          console.error("Received throw for wrong syncDepth: ", syncDepth, syncReq.contents[0]);
+          continue;
+        };
+        var validReqs = [];
+        while (!syncRequests.isEmpty()) {
+          var tuple = syncRequests.dequeue();
+          if (tuple[0] !== syncDepth) {
+            validReqs.push(tuple);
+          }
+        }
+        syncRequests.enqueueArray(validReqs);
+        syncDepth--;
+        if (syncReq.contents[1].Left) {
+          throw syncReq.contents[1].Left;
+        } else {
+          throw unwrapVal(syncReq.contents[1].Right);
+        }
+      default:
+        throw 'runSyncCallback: unknown request tag ' + JSON.stringify(syncReq.tag);
       }
     }
   };

@@ -6,6 +6,7 @@
 {-# LANGUAGE UnboxedTuples #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE TupleSections #-}
 -----------------------------------------------------------------------------
 --
 -- Module      :  Language.Javascript.JSaddle.Run
@@ -38,54 +39,45 @@ module Language.Javascript.JSaddle.Run (
   , getJsonLazy
   , callAsFunction'
   , callAsConstructor'
-  , globalRef
 #endif
 ) where
 
 #ifndef ghcjs_HOST_OS
-import Control.Exception (try, SomeException(..))
+import Control.Exception (try, SomeException(..), throwIO)
 import Control.Monad (when, join, void, unless, forever)
-import Control.Monad.Trans.Reader (runReaderT)
+import Control.Monad.Except (catchError)
+import Control.Monad.Trans.Reader (runReaderT, asks)
 import Control.Monad.IO.Class (MonadIO(..))
 import Control.Monad.STM (atomically)
 import Control.Concurrent (myThreadId, forkIO, threadDelay)
-import Control.Concurrent.Async (race_)
+import Control.Concurrent.Async (race_, race)
 import Control.Concurrent.STM.TVar (writeTVar, readTVar, newTVarIO, modifyTVar', readTVarIO)
 import Control.Concurrent.MVar
-       (putMVar, takeMVar, newMVar, newEmptyMVar, modifyMVar, modifyMVar_, swapMVar, tryPutMVar)
+       (putMVar, takeMVar, newMVar, newEmptyMVar, modifyMVar, modifyMVar_, swapMVar, tryPutMVar, MVar)
 
 import Data.Monoid ((<>))
 import Data.Map (Map)
 import Data.Maybe
 import qualified Data.Map as M
-import Data.IORef (newIORef)
+import qualified Data.Text as T
+import GHCJS.Prim.Internal (primToJSVal)
 
 import Language.Javascript.JSaddle.Types
+import Language.Javascript.JSaddle.Value (valToText)
 --TODO: Handle JS exceptions
-import Data.Foldable (forM_, traverse_)
-import System.IO.Unsafe
+import Data.Foldable (forM_, traverse_, foldl')
 import Language.Javascript.JSaddle.Monad (syncPoint)
-
--- | The RefId of the global object
-globalRefId :: RefId
-globalRefId = RefId 1
-
-globalRef :: Ref
-globalRef = unsafePerformIO $ Ref <$> newIORef globalRefId
-{-# NOINLINE globalRef #-}
 
 -- | The first dynamically-allocated RefId
 initialRefId :: RefId
 initialRefId = RefId 2
 
-type CallbackResultId = ValId
-
-type CallbackResult = JSVal
+type CallbackResult = Either SomeException (Either JavaScriptException JSVal)
 
 runJavaScript
   :: ([TryReq] -> IO ()) -- ^ Send a batch of requests to the JS engine; we assume that requests are performed in the order they are sent; requests received while in a synchronous block must not be processed until the synchronous block ends (i.e. until the JS side receives the final value yielded back from the synchronous block)
   -> IO ( [Rsp] -> IO () -- Responses must be able to continue coming in as a sync block runs, or else the caller must be careful to ensure that sync blocks are only run after all outstanding responses have been processed
-        , SyncCommand -> IO [Either CallbackResultId TryReq]
+        , SyncCommand -> IO [(Int, SyncBlockReq)]
         , JSContextRef
         )
   -- These default have been determined to give good results on jsaddle-warp
@@ -100,7 +92,7 @@ runJavaScriptInt
   -> ([TryReq] -> IO ())
   -- ^ See comments for runJavaScript
   -> IO ( [Rsp] -> IO ()
-        , SyncCommand -> IO [Either CallbackResultId TryReq]
+        , SyncCommand -> IO [(Int, SyncBlockReq)]
         , JSContextRef
         )
 runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
@@ -112,49 +104,105 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
   nextTryId <- newTVarIO $ TryId 1
   tries <- newTVarIO M.empty
   pendingResults <- newTVarIO M.empty
-  yieldAccumVar <- newMVar [] -- Accumulates results that need to be yielded
+  yieldAccumVar <- newMVar (False, []) -- Accumulates results that need to be yielded
   yieldReadyVar <- newEmptyMVar -- Filled when there is at least one item in yieldAccumVar
   -- Each value in the map corresponds to a value ready to be returned from the sync frame corresponding to its key
   -- INVARIANT: \(depth, readyFrames) -> all (< depth) $ M.keys readyFrames
-  syncCallbackState <- newMVar (0, M.empty)
+  syncCallbackState <- newMVar (0, M.empty, M.empty)
   syncState <- newMVar SyncState_InSync
   nextSyncReqId <- newTVarIO $ SyncReqId 1
   syncReqs <- newTVarIO mempty
   sendReqsBatchVar <- newMVar ()
   pendingReqs <- newTVarIO []
   pendingReqsCount <- newTVarIO (0 :: Int)
-  let enqueueYieldVal val = do
-        wasEmpty <- modifyMVar yieldAccumVar $ \old -> do
-          let !new = val : old
-          return (new, null old)
-        when wasEmpty $ putMVar yieldReadyVar ()
-      enterSyncFrame = modifyMVar syncCallbackState $ \(oldDepth, readyFrames) -> do
-        let !newDepth = succ oldDepth
-        return ((newDepth, readyFrames), newDepth)
-      exitSyncFrame myDepth myRetVal = modifyMVar_ syncCallbackState $ \(oldDepth, oldReadyFrames) -> case oldDepth `compare` myDepth of
+  let enqueueSyncBlockRequest depth req = do
+        doPutMVar <- modifyMVar yieldAccumVar $ \(resultReady, old) -> do
+          let !new = (depth, SyncBlockReq_Req req) : old
+          return ((resultReady, new), null old && not resultReady)
+        when doPutMVar $ putMVar yieldReadyVar ()
+      tryEnterSyncFrame :: (Int -> MVar TryId -> IO CallbackResult) -> IO [(Int, SyncBlockReq)]
+      tryEnterSyncFrame startNewFrame = modifyMVar syncCallbackState $ \(oldDepth, readyFrames, oldFrameTries) -> modifyMVar yieldAccumVar $ \(resultReady, old) -> do
+        let
+          isThrow req = case req of
+            SyncBlockReq_Throw _ _ -> True
+            _ -> False
+          -- If we have a throw on a lower frame, then the new frame should not be started
+          -- Need to do throw immediately on the new frame
+          startingNewFrame = not $ any isThrow $ M.elems readyFrames
+          !newResultReady = if startingNewFrame then False else resultReady
+          -- these are sent immediately
+          new
+            | not startingNewFrame =
+              (succ oldDepth, SyncBlockReq_Throw (succ oldDepth) (Left "AsyncCancelled: Lower frame has exception")) : (reverse old)
+            | otherwise = reverse old
+          !newDepth = if startingNewFrame then succ oldDepth else oldDepth
+        newFrameTries <- if startingNewFrame
+          then do
+            tryMVar <- newEmptyMVar
+            void $ forkIO $ (exitSyncFrame newDepth =<< startNewFrame newDepth tryMVar)
+            (\t -> M.insertWith (error "frame's tryId already present") newDepth t oldFrameTries)
+              <$> takeMVar tryMVar
+          else pure oldFrameTries
+        unless (newResultReady || (null old && not resultReady)) $ takeMVar yieldReadyVar
+        return ((newResultReady, []), ((newDepth, readyFrames, newFrameTries), new))
+      exitSyncFrame :: Int -> CallbackResult -> IO ()
+      exitSyncFrame myDepth myRetVal = modifyMVar_ syncCallbackState $ \(oldDepth, oldReadyFrames, oldFrameTries) -> case oldDepth `compare` myDepth of
         LT -> error "should be impossible: trying to return from deeper sync frame than the current depth"
-        -- We're the top frame, so yield our value to the caller
-        EQ -> do
-          let yieldAllReady :: Int -> Map Int CallbackResult -> CallbackResult -> IO (Int, Map Int CallbackResult)
-              yieldAllReady depth readyFrames retVal = do
-                -- Even though the valId is escaping, this is safe because we know that our yielded value will go out before any potential FreeVal request could go out
-                flip runReaderT env $ unJSM $ withJSValId retVal $ \retValId -> do
-                  JSM $ liftIO $ enqueueYieldVal $ Left retValId
-                let !nextDepth = pred depth
-                case M.maxViewWithKey readyFrames of
-                  -- The parent frame is also ready to yield
-                  Just ((k, nextRetVal), nextReadyFrames)
-                    | k == nextDepth
-                      -> yieldAllReady nextDepth nextReadyFrames nextRetVal
-                  _ -> return (nextDepth, readyFrames)
-          yieldAllReady oldDepth oldReadyFrames myRetVal
-        -- We're not the top frame, so just store our value so it can be yielded later
-        GT -> do
-          let !newReadyFrames = M.insertWith (error "should be impossible: trying to return from a sync frame that has already returned") myDepth myRetVal oldReadyFrames
-          return (oldDepth, newReadyFrames)
-      yield = do
+        -- Just store our value so it can be yielded later
+        _ -> do
+          !syncBlockReq <- case myRetVal of
+            Left e -> pure $ SyncBlockReq_Throw myDepth (Left $ T.pack $ show e)
+            -- Even though the valId is escaping, this is safe because we know that our yielded value will
+            -- go out before any potential FreeVal request could go out
+            -- The FreeVal request using this 'env' will be done async after all sync frames.
+            Right v -> flip runReaderT env $ unJSM $ withJSValId (either unJavaScriptException id v) $ \retValId -> do
+              pure $ case v of
+                Left _ -> SyncBlockReq_Throw myDepth (Right retValId)
+                Right _ -> SyncBlockReq_Result retValId
+          let !newReadyFrames = M.insertWith (error "should be impossible: trying to return from a sync frame that has already returned") myDepth syncBlockReq oldReadyFrames
+          !newFrameTries <- case myRetVal of
+            Right _ -> pure (M.delete myDepth oldFrameTries)
+            Left _ -> do
+              let
+                (!newFrameTries, toStop) = M.split myDepth oldFrameTries
+                stopTry tryId = do
+                  mTryMVar <- atomically $ do
+                    currentTries <- readTVar tries
+                    writeTVar tries $! M.delete tryId currentTries
+                    return $ M.lookup tryId currentTries
+                  forM_ mTryMVar $ \v ->
+                    putMVar v $ Left $ primToJSVal $ PrimVal_String "Parent Try received an exception."
+              mapM_ stopTry (M.elems toStop)
+              pure newFrameTries
+          when (myDepth == oldDepth) $ modifyMVar_ yieldAccumVar $ \(resultReady, old) -> do
+            when ((null old) && (not resultReady)) $ putMVar yieldReadyVar ()
+            return (True, old)
+          return (oldDepth, newReadyFrames, newFrameTries)
+
+      yield = modifyMVar syncCallbackState $ \(oldDepth, oldReadyFrames, oldFrameTries) -> do
+        let yieldAllReady :: (Int, Map Int SyncBlockReq)
+              -> ([(Int, SyncBlockReq)], (Int, Map Int SyncBlockReq))
+            yieldAllReady (depth, readyFrames) = case M.lookup depth readyFrames of
+              Nothing -> ([], (depth, readyFrames))
+              Just v -> ((depth,v):vs, remaining)
+                where
+                  (vs, remaining) = yieldAllReady (pred depth, M.delete depth readyFrames)
+            (allResults, (newDepth, newReadyFrames)) = yieldAllReady (oldDepth, oldReadyFrames)
+        requests <- reverse . snd <$> swapMVar yieldAccumVar (False, [])
+        pure $ ((newDepth, newReadyFrames, oldFrameTries), allResults ++ requests)
+      waitForYield = do
         takeMVar yieldReadyVar
-        reverse <$> swapMVar yieldAccumVar []
+        reqs <- yield
+        let shortCircuitReqs = map (canShortCircuitReq . snd) reqs
+            canShortCircuitReq = \case
+              SyncBlockReq_Req r -> case _tryReq_req r of
+                Req_FinishTry -> Just (Rsp_FinishTry (_tryReq_tryId r) (Right ()))
+                Req_Sync syncReqId -> Just (Rsp_Sync syncReqId)
+                _ -> Nothing
+              _ -> Nothing
+        if all isJust shortCircuitReqs
+          then processRsp (catMaybes shortCircuitReqs) >> waitForYield -- Short circuit all of the requests
+          else pure reqs
       processRsp = traverse_ $ \case
         Rsp_GetJson getJsonReqId val -> do
           reqs <- atomically $ do
@@ -235,25 +283,28 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
         , _jsContextRef_waitForResults = Nothing
         }
       processSyncCommand = \case
-        SyncCommand_StartCallback callbackId this args -> do
+        SyncCommand_StartCallback reqQueueEmpty callbackId this args -> do
           mCallback <- fmap (M.lookup callbackId) $ atomically $ readTVar callbacks
           case mCallback of
             Just (callback :: JSVal -> [JSVal] -> JSM JSVal) -> do
-              myDepth <- enterSyncFrame
-              _ <- forkIO $ do
-                _ :: Either SomeException () <- try $ do
-                  threadId <- myThreadId
-                  syncStateLocal <- newMVar SyncState_InSync
-                  let syncEnv = env { _jsContextRef_sendReq = enqueueYieldVal . Right
-                                    , _jsContextRef_syncThreadId = Just threadId
-                                    , _jsContextRef_syncState = syncStateLocal }
-                  result <- flip runReaderT syncEnv $ unJSM $
-                    join $ callback <$> wrapJSVal this <*> traverse wrapJSVal args --TODO: Handle exceptions that occur within the callback
-                  exitSyncFrame myDepth result
-                return ()
-              yield
+              reqs <- tryEnterSyncFrame $ \myDepth tryIdMVar -> do
+                threadId <- myThreadId
+                syncStateLocal <- newMVar SyncState_InSync
+                let syncEnv = env { _jsContextRef_sendReq = enqueueSyncBlockRequest myDepth
+                                  , _jsContextRef_syncThreadId = Just threadId
+                                  , _jsContextRef_syncState = syncStateLocal }
+                    run = do
+                      JSM $ asks _jsContextRef_myTryId >>= liftIO . putMVar tryIdMVar
+                      (Right <$>) $ join $ callback <$> wrapJSVal this <*> traverse wrapJSVal args
+                try $ flip runReaderT syncEnv $ unJSM $
+                  run `catchError` (\e -> do
+                    exceptionStr <- T.unpack <$> valToText (unJavaScriptException e)
+                    unsafeInlineLiftIO $ putStrLn ("JavaScriptException happened in sync callback : " <> exceptionStr) >> pure (Left e))
+              case (reqs, reqQueueEmpty) of
+                ([], True) -> waitForYield -- Wait and send nonEmpty list if queue on JS side is empty
+                _ -> pure reqs
             Nothing -> error $ "sync callback " <> show callbackId <> " called, but does not exist"
-        SyncCommand_Continue -> yield
+        SyncCommand_Continue -> waitForYield
   void $ forkIO doSendReqs
   return (processRsp, processSyncCommand, env)
 

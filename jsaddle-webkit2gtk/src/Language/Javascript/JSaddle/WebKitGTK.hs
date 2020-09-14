@@ -79,7 +79,7 @@ import GI.WebKit2
         onWebViewLoadChanged, setSettingsEnableDeveloperExtras,
         webViewSetSettings, webViewGetSettings, ScriptDialogType(..))
 
-import Language.Javascript.JSaddle (JSM, Rsp, SyncCommand, ValId, TryReq, runJSM)
+import Language.Javascript.JSaddle (JSM, Rsp, SyncCommand, ValId, TryReq, SyncBlockReq, runJSM)
 import Language.Javascript.JSaddle.Run (runJavaScript)
 import Language.Javascript.JSaddle.Run.Files (ghcjsHelpers, jsaddleCoreJs)
 
@@ -150,7 +150,7 @@ connectUserContentManagerScriptMessageReceived obj cb after = liftIO $ do
       Nothing
 #endif
 
-addJSaddleHandler :: WebView -> ([Rsp] -> IO ()) -> (SyncCommand -> IO [Either ValId TryReq]) -> IO ()
+addJSaddleHandler :: WebView -> ([Rsp] -> IO ()) -> (SyncCommand -> IO [(Int, SyncBlockReq)]) -> IO ()
 addJSaddleHandler webView processResult processSyncCommand = do
     manager <- webViewGetUserContentManager webView
     _ <- onUserContentManagerScriptMessageReceived manager $ \result -> do

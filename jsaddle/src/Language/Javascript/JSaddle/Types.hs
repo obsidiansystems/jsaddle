@@ -85,6 +85,7 @@ module Language.Javascript.JSaddle.Types (
   , getLazyVal
   , Rsp (..)
   , SyncCommand (..)
+  , SyncBlockReq (..)
   , CallbackId (..)
   , GetJsonReqId (..)
   , SyncReqId (..)
@@ -152,6 +153,7 @@ import Control.Concurrent.MVar (MVar, swapMVar, modifyMVar, readMVar, tryTakeMVa
 import Data.Bifunctor
 import Data.Bifoldable
 import Data.Bitraversable
+import Data.Text (Text)
 import Data.Typeable (Typeable)
 import Data.Coerce (coerce, Coercible)
 import Data.Aeson (ToJSON(..), FromJSON(..))
@@ -375,7 +377,7 @@ runJSM a ctx = liftIO $ do
                     _jsContextRef_sendReq = _jsContextRef_sendReqAsync ctx }
   result <- flip runReaderT ctx' $ unJSM $ do
     catchError (Right <$> a) (return . Left)  -- <* waitForSync
-  either (throwIO . JavaScriptException) return result
+  either throwIO return result
 #endif
 
 -- | Type used for Haskell functions called from JavaScript.
@@ -522,7 +524,10 @@ instance FromJSON Rsp where
   parseJSON = A.genericParseJSON $ aesonOptions "Rsp"
 
 data SyncCommand
-   = SyncCommand_StartCallback CallbackId ValId [ValId] -- The input valIds here must always be allocated on the JS side --TODO: Make sure throwing stuff works when it ends up skipping over our own call stack entries
+   = SyncCommand_StartCallback Bool CallbackId ValId [ValId]
+   -- ^ Bool indicates if the request queue is empty when the StartCallback happened
+   -- The input valIds here must always be allocated on the JS side
+   -- TODO: Make sure throwing stuff works when it ends up skipping over our own call stack entries
    | SyncCommand_Continue
    deriving (Show, Read, Eq, Ord, Generic)
 
@@ -531,6 +536,18 @@ instance ToJSON SyncCommand where
 
 instance FromJSON SyncCommand where
   parseJSON = A.genericParseJSON $ aesonOptions "SyncCommand"
+
+data SyncBlockReq
+  = SyncBlockReq_Req TryReq
+  | SyncBlockReq_Result ValId
+  | SyncBlockReq_Throw Int (Either Text ValId) -- ^ Int is the frame depth which should receive throw
+   deriving (Generic)
+
+instance ToJSON SyncBlockReq where
+  toEncoding = A.genericToEncoding $ aesonOptions "SyncBlockReq"
+
+instance FromJSON SyncBlockReq where
+  parseJSON = A.genericParseJSON $ aesonOptions "SyncBlockReq"
 
 data TryReq = TryReq
   { _tryReq_tryId :: TryId
@@ -667,7 +684,7 @@ wrapRef :: RefId -> JSM Ref
 wrapRef valId = JSM $ do
   valRef <- liftIO $ newIORef valId
   -- Bind this strictly to avoid retaining the whole JSContextRef in the finalizer
-  !sendReq' <- asks _jsContextRef_sendReq
+  !sendReq' <- asks _jsContextRef_sendReqAsync
   void $ liftIO $ mkWeakIORef valRef $ do
     sendReq' $ TryReq
       { _tryReq_tryId = TryId 0 --TODO: This probably shouldn't even be a TryReq
@@ -759,7 +776,7 @@ callAsConstructor' :: JSVal -> [JSVal] -> JSM JSVal
 callAsConstructor' f args = withJSValOutput_ $ \ref -> do
   sendReq $ Req_CallAsConstructor f args ref
 
-instance MonadError JSVal JSM where
+instance MonadError JavaScriptException JSM where
   catchError a h = do
     tryId <- newId _jsContextRef_nextTryId
     tries <- JSM $ asks _jsContextRef_tries
@@ -796,7 +813,7 @@ instance MonadError JSVal JSM where
     case tryResult of
       Left someException -> unsafeInlineLiftIO $ throwIO someException
       Right finishRes -> case finishRes of
-        Left e -> h e
+        Left e -> h (JavaScriptException e)
         Right res -> pure res
   throwError e = JSM $ do
     tries <- asks _jsContextRef_tries
@@ -808,7 +825,7 @@ instance MonadError JSVal JSM where
         return $ M.lookup tid currentTries
       case mChildTryMVar of
         Nothing -> pure () -- Could be a race with another exception or FinishTry req
-        Just v -> putMVar v $ Left e
+        Just v -> putMVar v $ Left $ unJavaScriptException e
       forever $ threadDelay maxBound
 
 instance MonadIO JSM where

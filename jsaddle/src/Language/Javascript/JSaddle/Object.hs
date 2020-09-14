@@ -116,7 +116,7 @@ import Language.Javascript.JSaddle.Types
 #else
 import GHCJS.Marshal.Internal (ToJSVal(..))
 import Language.Javascript.JSaddle.Native
-       (newAsyncCallback, newSyncCallback, callAsFunction, callAsConstructor)
+       (newAsyncCallback, newSyncCallback, callAsFunction, callAsConstructor, globalRef)
 import Language.Javascript.JSaddle.Monad (JSM)
 import Language.Javascript.JSaddle.Types
        (JSString, Object(..), CallbackId, PrimVal(..),
