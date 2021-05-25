@@ -56,11 +56,11 @@ import GI.GLib (timeoutAdd, idleAdd, pattern PRIORITY_HIGH, pattern PRIORITY_DEF
 import qualified GI.Gtk as Gtk (main, init)
 import GI.Gtk
        (windowSetPosition, windowSetDefaultSize, windowNew,
-        scrolledWindowNew, noAdjustment, containerAdd,
+        scrolledWindowNew, Adjustment, containerAdd,
         WindowType(..), WindowPosition(..), widgetDestroy,
         widgetGetToplevel, widgetShowAll, onWidgetDestroy,
         mainQuit)
-import GI.Gio (noCancellable)
+import GI.Gio (Cancellable)
 import GI.JavaScriptCore (valueToString)
 import GI.WebKit2
        (scriptDialogPromptSetText, scriptDialogPromptGetDefaultText,
@@ -105,7 +105,7 @@ run main = do
     _ <- timeoutAdd PRIORITY_HIGH 10 (yield >> return True)
     windowSetDefaultSize window 900 600
     windowSetPosition window WindowPositionCenter
-    scrollWin <- scrolledWindowNew noAdjustment noAdjustment
+    scrollWin <- scrolledWindowNew (Nothing :: Maybe Adjustment) (Nothing :: Maybe Adjustment)
     contentManager <- userContentManagerNew
     webView <- webViewNewWithUserContentManager contentManager
     settings <- webViewGetSettings webView
@@ -129,10 +129,10 @@ run main = do
 runInWebView :: JSM () -> WebView -> IO ()
 runInWebView f webView = do
     (processResults, processSyncCommand, jsCtx) <- runJavaScript $ \batch -> postGUIAsync $
-        webViewRunJavascript webView (decodeUtf8 . toStrict $ "runJSaddleBatch(" <> encode batch <> ");") noCancellable Nothing
+        webViewRunJavascript webView (decodeUtf8 . toStrict $ "runJSaddleBatch(" <> encode batch <> ");") (Nothing :: Maybe Cancellable) Nothing
 
     addJSaddleHandler webView processResults processSyncCommand
-    webViewRunJavascript webView (decodeUtf8 $ toStrict jsaddleJs) noCancellable . Just $
+    webViewRunJavascript webView (decodeUtf8 $ toStrict jsaddleJs) (Nothing :: Maybe Cancellable) . Just $
         \_obj _asyncResult -> do
             _ <- forkIO $ runJSM f jsCtx
             return ()
