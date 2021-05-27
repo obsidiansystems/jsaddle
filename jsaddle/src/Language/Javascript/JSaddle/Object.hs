@@ -518,9 +518,8 @@ array args = do
 -- | JavaScript's global object
 global :: Object
 #ifdef ghcjs_HOST_OS
-global = js_window
-foreign import javascript unsafe "$r = window"
-    js_window :: Object
+foreign import javascript unsafe "$r = globalThis"
+    global :: Object
 #else
 global = Object $ primToJSVal $ PrimVal_Ref globalRef
 #endif
