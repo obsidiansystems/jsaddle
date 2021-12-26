@@ -66,7 +66,12 @@ import Control.Exception (try, SomeException (..))
 
 import Language.Javascript.JSaddle.WebSockets.Compat (getTextMessageByteString)
 
-jsaddleOr :: ConnectionOptions -> JSM () -> Application -> IO Application
+
+-- | Main Implementation that runs the given JSM Code as a Wai-application.
+jsaddleOr :: ConnectionOptions
+          -> JSM ()
+          -> Application -- ^ Application that specifies how to handle the routes.
+          -> IO Application
 jsaddleOr opts entryPoint otherApp = do
     syncFuncs <- newIORef Map.empty
     let wsApp :: ServerApp
@@ -126,45 +131,72 @@ jsaddleOr opts entryPoint otherApp = do
                         _ -> resp
     return $ websocketsOr opts wsApp syncHandler
 
+--------------------------------------------------------------------------------
+-- * Applications
 
+-- | The default jsaddle application, i.e. with the default JSAddle
+-- initialization javascript.
 jsaddleApp :: Application
 jsaddleApp = jsaddleAppWithJs $ jsaddleJs False
 
-jsaddleAppWithJs :: ByteString -> Application
+-- | Creates a JSAddle application that accepts only the index, and
+-- replies forbidden to all other requests.
+jsaddleAppWithJs :: ByteString -- ^ the javascript to initialize JSAddle
+                 -> Application
 jsaddleAppWithJs js req sendResponse =
   jsaddleAppWithJsOr js
     (\_ _ -> sendResponse $ W.responseLBS H.status403 [("Content-Type", "text/plain")] "Forbidden")
     req sendResponse
 
+-- | Serves JSAddle, any other requests are handled by the given other
+-- application.
 jsaddleAppWithJsOr :: ByteString -> Application -> Application
 jsaddleAppWithJsOr js otherApp req sendResponse =
   fromMaybe (otherApp req sendResponse)
     (jsaddleAppPartialWithJs js req sendResponse)
 
+-- | Specify the JSM code we want to run when starting the JSAddle application.
 jsaddleWithAppOr :: ConnectionOptions -> JSM () -> Application -> IO Application
 jsaddleWithAppOr opts entryPoint otherApp = jsaddleOr opts entryPoint $ \req sendResponse ->
   (fromMaybe (otherApp req sendResponse)
      (jsaddleAppPartial req sendResponse))
 
+-- | JSAddle application that accepts only GET requests on the following paths
+-- - /
+-- - /jsaddle.js
+--
+-- if the response matches either of those, we serve them.
 jsaddleAppPartial :: Request -> (Response -> IO ResponseReceived) -> Maybe (IO ResponseReceived)
 jsaddleAppPartial = jsaddleAppPartialWithJs $ jsaddleJs False
 
-indexResponse :: Response
-indexResponse = W.responseLBS H.status200 [("Content-Type", "text/html")] indexHtml
 
+-- | Implementation of jsaddleAppPartial that also takes the bytestring representing the
+-- jsaddle initialization we should return.
 jsaddleAppPartialWithJs :: ByteString -> Request -> (Response -> IO ResponseReceived) -> Maybe (IO ResponseReceived)
 jsaddleAppPartialWithJs js req sendResponse = case (W.requestMethod req, W.pathInfo req) of
     ("GET", []) -> Just $ sendResponse indexResponse
     ("GET", ["jsaddle.js"]) -> Just $ sendResponse $ W.responseLBS H.status200 [("Content-Type", "application/javascript")] js
     _ -> Nothing
 
+-- | Respond with the index html page
+indexResponse :: Response
+indexResponse = W.responseLBS H.status200 [("Content-Type", "text/html")] indexHtml
+
+--------------------------------------------------------------------------------
+-- * The piece of javascript to to initialize JSAddle
+
+-- | The javascript, the boolean indicates whether we shoulld refresh on reload.
 jsaddleJs :: Bool -> ByteString
 jsaddleJs = jsaddleJs' Nothing
 
 --TODO: Make refreshOnLoad work
 -- Use this to generate this string for embedding
 -- sed -e 's|\\|\\\\|g' -e 's|^|    \\|' -e 's|$|\\n\\|' -e 's|"|\\"|g' data/jsaddle.js | pbcopy
-jsaddleJs' :: Maybe ByteString -> Bool -> ByteString
+--
+-- |  The javascript file that sets up the connection to the JSAddle Application.
+jsaddleJs' :: Maybe ByteString -- ^ URI corresponding to JSAddle
+           -> Bool -- ^ should we refresh on reload
+           -> ByteString
 jsaddleJs' jsaddleUri refreshOnLoad = jsaddleCoreJs <> "\
     \if(typeof global !== \"undefined\" && typeof require === \"function\") {\n\
     \    global.window = global;\n\
