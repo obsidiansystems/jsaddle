@@ -145,7 +145,7 @@ import Control.Lens (IndexPreservingGetter, to)
 -- >>> testJSaddle $ return ()
 -- ...
 
--- | Object can be made by evaluating a fnction in 'JSM' as long
+-- | Object can be made by evaluating a function in 'JSM' as long
 --   as it returns something we can make into a Object.
 instance MakeObject v => MakeObject (JSM v) where
     makeObject v = v >>= makeObject
