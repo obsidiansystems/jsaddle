@@ -180,7 +180,7 @@ this !! index = do
 
 -- | Makes a getter for a particular property name.
 --
--- > js name = to (!name)
+-- > js name = to (! name)
 --
 -- >>> testJSaddle $ eval "'Hello World'.length"
 -- 11
