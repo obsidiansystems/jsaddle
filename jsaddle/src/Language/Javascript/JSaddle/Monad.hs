@@ -36,13 +36,12 @@ module Language.Javascript.JSaddle.Monad (
 
 import Control.Monad.IO.Class (MonadIO(..))
 import Control.Monad.Catch (catch, bracket)
-import Language.Javascript.JSaddle.Types (JSM(..), MonadJSM, liftJSM, askJSM, JSContextRef, runJSM, runJSMCheap)
+import Language.Javascript.JSaddle.Types (JSM(..), MonadJSM, liftJSM, askJSM, JSContextRef, runJSM, runJSMCheap, waitForSync)
 import Control.Concurrent.MVar (MVar, newMVar)
 import System.IO.Unsafe (unsafePerformIO)
 
-{-# DEPRECATED syncPoint "Use 'liftIO $ return ()' instead." #-}
-syncPoint :: MonadIO m => m ()
-syncPoint = liftIO $ return ()
+syncPoint :: MonadJSM m => m ()
+syncPoint = liftJSM $ waitForSync
 
 syncAfter :: Applicative m => m ()
 syncAfter = pure () --TODO: What should this do?

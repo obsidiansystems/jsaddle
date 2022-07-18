@@ -113,6 +113,7 @@ module Language.Javascript.JSaddle.Types (
   , callAsFunction'
   , callAsConstructor'
   , unsafeInlineLiftIO
+  , waitForSync
 #endif
 ) where
 
