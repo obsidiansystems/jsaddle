@@ -32,6 +32,7 @@ module Language.Javascript.JSaddle.Run (
   , newSyncCallback''
   , callbackToSyncFunction
   , callbackToAsyncFunction
+  , syncPoint
   , getProperty
   , setProperty
   , getJson
@@ -65,6 +66,7 @@ import Language.Javascript.JSaddle.Types
 import Language.Javascript.JSaddle.Value (valToText)
 --TODO: Handle JS exceptions
 import Data.Foldable (forM_, traverse_, foldl')
+import Language.Javascript.JSaddle.Monad (syncPoint)
 
 -- | The first dynamically-allocated RefId
 initialRefId :: RefId

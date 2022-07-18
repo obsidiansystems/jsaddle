@@ -21,7 +21,7 @@ module Language.Javascript.JSaddle.Evaluate (
     eval
 ) where
 
-import Language.Javascript.JSaddle.Types (JSM, JSVal)
+import Language.Javascript.JSaddle.Types (JSVal)
 #ifdef ghcjs_HOST_OS
 import Control.Monad.IO.Class (MonadIO(..))
 import Language.Javascript.JSaddle.Types (JSString)
@@ -30,6 +30,7 @@ import Language.Javascript.JSaddle.Native.Internal
        (evaluateScript)
 #endif
 import Language.Javascript.JSaddle.Marshal.String (ToJSString(..))
+import Language.Javascript.JSaddle.Monad (JSM)
 
 -- $setup
 -- >>> import Language.Javascript.JSaddle.Test (testJSaddle)
