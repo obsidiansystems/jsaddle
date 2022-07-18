@@ -28,9 +28,16 @@ module Language.Javascript.JSaddle.Monad (
 
 import Control.Monad.IO.Class (MonadIO(..))
 import Control.Monad.Catch (catch, bracket)
-import Language.Javascript.JSaddle.Types (JSM(..), MonadJSM, liftJSM, askJSM, JSContextRef, runJSM, runJSMCheap, waitForSync)
+import Language.Javascript.JSaddle.Types (JSM(..), MonadJSM, liftJSM, askJSM, JSContextRef, runJSM, runJSMCheap)
+#ifndef ghcjs_HOST_OS
+import Language.Javascript.JSaddle.Types (waitForSync)
+#endif
 import Control.Concurrent.MVar (MVar, newMVar)
 import System.IO.Unsafe (unsafePerformIO)
 
 syncPoint :: MonadJSM m => m ()
+#ifndef ghcjs_HOST_OS
 syncPoint = liftJSM $ waitForSync
+#else
+syncPoint = return ()
+#endif
