@@ -24,14 +24,6 @@ module Language.Javascript.JSaddle.Monad (
   , runJSM
   , runJSMCheap
   , syncPoint
-  , syncAfter
-  , waitForAnimationFrame
-  , nextAnimationFrame
-  , animationFrameHandlers
-
-  -- * Exception Handling
-  , catch
-  , bracket
 ) where
 
 import Control.Monad.IO.Class (MonadIO(..))
@@ -42,20 +34,3 @@ import System.IO.Unsafe (unsafePerformIO)
 
 syncPoint :: MonadJSM m => m ()
 syncPoint = liftJSM $ waitForSync
-
-syncAfter :: Applicative m => m ()
-syncAfter = pure () --TODO: What should this do?
-
-waitForAnimationFrame :: m () -> m ()
-waitForAnimationFrame = id --TODO: What should this do?
-
-nextAnimationFrame :: m () -> m ()
-nextAnimationFrame = id --TODO: What should this do?
-
---TODO: Get rid of this
-animationFrameHandlerVar :: MVar [Double -> JSM ()]
-animationFrameHandlerVar = unsafePerformIO $ newMVar []
-{-# NOINLINE animationFrameHandlerVar #-}
-
-animationFrameHandlers :: JSContextRef -> MVar [Double -> JSM ()]
-animationFrameHandlers = return animationFrameHandlerVar
