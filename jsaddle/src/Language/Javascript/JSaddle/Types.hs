@@ -176,7 +176,7 @@ import Control.Monad.STM (atomically)
 import Control.Concurrent.STM.TVar
        (writeTVar, readTVar, modifyTVar')
 import Control.Monad.Primitive
-import Control.Monad.IO.Unlift (MonadUnliftIO(..), UnliftIO(..))
+import Control.Monad.IO.Unlift (MonadUnliftIO(..))
 import qualified Control.Monad.Fail as Fail
 import System.Mem.Weak (Weak, deRefWeak, mkWeakPtr)
 #endif
@@ -865,9 +865,9 @@ instance MonadIO JSM where
     JSM $ liftIO a
 
 instance MonadUnliftIO JSM where
-  askUnliftIO = do
+  withRunInIO f = do
     ctx <- askJSM
-    return $ UnliftIO (`runJSM` ctx)
+    liftIO $ f (\jsm -> runJSM jsm ctx)
 
 instance MonadRef JSM where
     type Ref JSM = MonadRef.Ref IO
