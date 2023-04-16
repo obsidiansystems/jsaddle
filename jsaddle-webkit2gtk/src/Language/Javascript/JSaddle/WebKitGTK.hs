@@ -139,7 +139,7 @@ runInWebView f webView = do
 
     addJSaddleHandler webView processResults processSyncCommand
     webViewRunJavascript webView (decodeUtf8 $ toStrict jsaddleJs) noCancellable . Just $
-        \_obj _asyncResult -> do
+        \_obj _asyncResult _data -> do
             _ <- forkIO $ runJSM f jsCtx
             return ()
 
