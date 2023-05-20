@@ -135,10 +135,8 @@ import Control.Monad (void)
 import Control.Monad.Catch (MonadThrow, MonadCatch(..), MonadMask(..))
 import Control.Monad.Except
 import Control.Monad.Trans.Cont (ContT(..))
-import Control.Monad.Trans.Error (Error(..), ErrorT(..))
 import Control.Monad.Trans.Except (ExceptT(..))
 import Control.Monad.Trans.Identity (IdentityT(..))
-import Control.Monad.Trans.List (ListT(..))
 import Control.Monad.Trans.Maybe (MaybeT(..))
 import Control.Monad.Trans.Reader (ReaderT(..), ask)
 import Control.Monad.Trans.RWS.Lazy as Lazy (RWST(..))
@@ -292,19 +290,11 @@ instance (MonadJSM m) => MonadJSM (ContT r m) where
     liftJSM' = lift . liftJSM'
     {-# INLINE liftJSM' #-}
 
-instance (Error e, MonadJSM m) => MonadJSM (ErrorT e m) where
-    liftJSM' = lift . liftJSM'
-    {-# INLINE liftJSM' #-}
-
 instance (MonadJSM m) => MonadJSM (ExceptT e m) where
     liftJSM' = lift . liftJSM'
     {-# INLINE liftJSM' #-}
 
 instance (MonadJSM m) => MonadJSM (IdentityT m) where
-    liftJSM' = lift . liftJSM'
-    {-# INLINE liftJSM' #-}
-
-instance (MonadJSM m) => MonadJSM (ListT m) where
     liftJSM' = lift . liftJSM'
     {-# INLINE liftJSM' #-}
 
