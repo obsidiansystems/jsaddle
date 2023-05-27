@@ -118,7 +118,7 @@ jsaddleOr opts entryPoint otherApp = do
                     Nothing -> error $ "jsaddle sync message decode failed: " <> show body
                     Just parsed -> do
                       result <- syncFunc parsed
-                      sendResponse $ W.responseLBS H.status200 [("Content-Type", "application/json")] $ encode result
+                      sendResponse $ W.responseLBS H.status200 [("Content-Type", "application/json"), ("Access-Control-Allow-Origin", "*")] $ encode result
             (method, _) -> (catch404 otherApp) req sendResponse
               where catch404 = W.modifyResponse $ \resp ->
                       case (method, W.responseStatus resp) of
@@ -155,7 +155,7 @@ indexResponse = W.responseLBS H.status200 [("Content-Type", "text/html")] indexH
 jsaddleAppPartialWithJs :: ByteString -> Request -> (Response -> IO ResponseReceived) -> Maybe (IO ResponseReceived)
 jsaddleAppPartialWithJs js req sendResponse = case (W.requestMethod req, W.pathInfo req) of
     ("GET", []) -> Just $ sendResponse indexResponse
-    ("GET", ["jsaddle.js"]) -> Just $ sendResponse $ W.responseLBS H.status200 [("Content-Type", "application/javascript")] js
+    ("GET", ["jsaddle.js"]) -> Just $ sendResponse $ W.responseLBS H.status200 [("Content-Type", "application/javascript"), ("Access-Control-Allow-Origin", "*")] js
     _ -> Nothing
 
 jsaddleJs :: Bool -> ByteString
