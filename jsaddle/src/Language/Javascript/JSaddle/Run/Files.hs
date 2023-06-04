@@ -36,7 +36,7 @@ indexHtml =
 -- (on linux, use xsel -bi instead of pbcopy)
 jsaddleCoreJs :: ByteString
 jsaddleCoreJs = "\
-    \function jsaddleCoreJs(global, sendRsp, processSyncCommand, RESPONSE_BUFFER_MAX_SIZE) {\n\
+    \function jsaddleCoreJs(global, sendRsp, processSyncCommand, RESPONSE_BUFFER_MAX_SIZE, arg) {\n\
     \  /*\n\
     \\n\
     \  Queue.js\n\
@@ -121,8 +121,35 @@ jsaddleCoreJs = "\
     \  var vals = new Map();\n\
     \  var responses = [];\n\
     \  var sendRspScheduled = false;\n\
-    \  vals.set(1, global);\n\
-    \  var nextValId = -1;\n\
+    \  var doSendRsp = function () {\n\
+    \    if (responses.length > 0) {\n\
+    \      var responses_ = responses;\n\
+    \      responses = [];\n\
+    \      sendRsp(responses_);\n\
+    \    }\n\
+    \  };\n\
+    \  var appendRsp = function(rsp) {\n\
+    \    responses.push(rsp);\n\
+    \    if (responses.length >= RESPONSE_BUFFER_MAX_SIZE) {\n\
+    \      doSendRsp();\n\
+    \    } else {\n\
+    \      if (sendRspScheduled === false) {\n\
+    \        sendRspScheduled = true;\n\
+    \        // Timeout of 0 interferes with batching, and 1 ms is a very high value.\n\
+    \        // But because we use TriggerSendRsp, this setTimeout is redundant when the jsaddle is active.\n\
+    \        // Without TriggerSendRsp the performance is bad for 0 and terribly bad for 1 ms.\n\
+    \        // This is useful only when jsaddle is idle, and its desirable to clear the response pipeline.\n\
+    \        setTimeout(function() {\n\
+    \          sendRspScheduled = false;\n\
+    \          doSendRsp();\n\
+    \        }, 1);\n\
+    \      };\n\
+    \    };\n\
+    \  };\n\
+    \  var sendRspImmediate = function(rsp) {\n\
+    \    responses.push(rsp);\n\
+    \    doSendRsp();\n\
+    \  };\n\
     \  var unwrapVal = function(valId) {\n\
     \    if(typeof valId === 'object') {\n\
     \      if(valId === null) {\n\
@@ -163,35 +190,6 @@ jsaddleCoreJs = "\
     \  var wrapVal = function(val) {\n\
     \    return wrapValWithDefault(val);\n\
     \  };\n\
-    \  var doSendRsp = function () {\n\
-    \    if (responses.length > 0) {\n\
-    \      var responses_ = responses;\n\
-    \      responses = [];\n\
-    \      sendRsp(responses_);\n\
-    \    }\n\
-    \  };\n\
-    \  var appendRsp = function(rsp) {\n\
-    \    responses.push(rsp);\n\
-    \    if (responses.length >= RESPONSE_BUFFER_MAX_SIZE) {\n\
-    \      doSendRsp();\n\
-    \    } else {\n\
-    \      if (sendRspScheduled === false) {\n\
-    \        sendRspScheduled = true;\n\
-    \        // Timeout of 0 interferes with batching, and 1 ms is a very high value.\n\
-    \        // But because we use TriggerSendRsp, this setTimeout is redundant when the jsaddle is active.\n\
-    \        // Without TriggerSendRsp the performance is bad for 0 and terribly bad for 1 ms.\n\
-    \        // This is useful only when jsaddle is idle, and its desirable to clear the response pipeline.\n\
-    \        setTimeout(function() {\n\
-    \          sendRspScheduled = false;\n\
-    \          doSendRsp();\n\
-    \        }, 1);\n\
-    \      };\n\
-    \    };\n\
-    \  };\n\
-    \  var sendRspImmediate = function(rsp) {\n\
-    \    responses.push(rsp);\n\
-    \    doSendRsp();\n\
-    \  };\n\
     \  var result = function(ref, val) {\n\
     \    vals.set(ref, val);\n\
     \    appendRsp({\n\
@@ -202,6 +200,9 @@ jsaddleCoreJs = "\
     \      ]\n\
     \    });\n\
     \  };\n\
+    \  vals.set(1, global);\n\
+    \  result(-1, arg);\n\
+    \  var nextValId = -2;\n\
     \  var syncRequests = new Queue();\n\
     \  var getNextSyncRequest = function() {\n\
     \    if(syncRequests.isEmpty()) {\n\
@@ -400,7 +401,7 @@ jsaddleCoreJs = "\
     \  };\n\
     \  return {\n\
     \    processReq: processReq,\n\
-    \    processReqs: function(reqs) { for (req of reqs) { processReq(req);}}\n\
+    \    processReqs: function(reqs) { for (var req of reqs) { processReq(req);}}\n\
     \  };\n\
     \}\n\
     \"

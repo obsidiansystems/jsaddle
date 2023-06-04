@@ -16,7 +16,7 @@ import Control.Monad.IO.Class (liftIO)
 import Control.Concurrent (forkIO, threadDelay, killThread)
 import Control.Exception (finally)
 import Language.Javascript.JSaddle.WebSockets
-import Language.Javascript.JSaddle.Types (JSM)
+import Language.Javascript.JSaddle.Types (JSM, JSVal)
 import Network.Wai.Handler.Warp (runSettings, setPort, setTimeout, defaultSettings)
 import Network.Wai
        (Middleware, Response, ResponseReceived, Application)
@@ -32,18 +32,18 @@ import Foreign.Store (readStore, lookupStore, writeStore, Store(..))
 -- | Start or restart the server.
 -- To run this as part of every :reload use
 -- > :def! reload (const $ return "::reload\nLanguage.Javascript.JSaddle.Warp.debug 3708 SomeMainModule.someMainFunction")
-debug :: Int -> JSM () -> IO ()
+debug :: Int -> (JSVal -> JSM ()) -> IO ()
 debug port f = do
     debugWrapper $ \withRefresh registerContext ->
         runSettings (setPort port (setTimeout 3600 defaultSettings)) =<<
-            jsaddleOr defaultConnectionOptions (registerContext >> f) (withRefresh $ jsaddleAppWithJs $ jsaddleJs True)
+            jsaddleOr defaultConnectionOptions (\arg -> registerContext >> f arg) (withRefresh $ jsaddleAppWithJs $ jsaddleJs True)
     putStrLn $ "<a href=\"http://localhost:" <> show port <> "\">run</a>"
 
-debugOr :: Int -> JSM () -> Application -> IO ()
+debugOr :: Int -> (JSVal -> JSM ()) -> Application -> IO ()
 debugOr port f b = do
     debugWrapper $ \withRefresh registerContext ->
         runSettings (setPort port (setTimeout 3600 defaultSettings)) =<<
-            jsaddleOr defaultConnectionOptions (registerContext >> f >> syncPoint) (withRefresh $ jsaddleAppWithJsOr (jsaddleJs True) b)
+            jsaddleOr defaultConnectionOptions (\arg -> registerContext >> f arg >> syncPoint) (withRefresh $ jsaddleAppWithJsOr (jsaddleJs True) b)
     putStrLn $ "<a href=\"http://localhost:" <> show port <> "\">run</a>"
 
 refreshMiddleware :: ((Response -> IO ResponseReceived) -> IO ResponseReceived) -> Middleware

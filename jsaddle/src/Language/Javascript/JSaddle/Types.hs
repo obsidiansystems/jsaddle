@@ -104,6 +104,7 @@ module Language.Javascript.JSaddle.Types (
   , wrapJSVal
   , newJson
   , lazyValResult
+  , wrapRef
   , callbackToSyncFunction
   , callbackToAsyncFunction
   , getProperty

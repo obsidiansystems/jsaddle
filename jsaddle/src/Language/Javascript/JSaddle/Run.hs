@@ -79,6 +79,7 @@ runJavaScript
   -> IO ( [Rsp] -> IO () -- Responses must be able to continue coming in as a sync block runs, or else the caller must be careful to ensure that sync blocks are only run after all outstanding responses have been processed
         , SyncCommand -> IO [(Int, SyncBlockReq)]
         , JSContextRef
+        , JSVal
         )
   -- These default have been determined to give good results on jsaddle-warp
   -- Tested with jsaddle-benchmark (https://github.com/obsidiansystems/jsaddle-benchmark)
@@ -94,6 +95,7 @@ runJavaScriptInt
   -> IO ( [Rsp] -> IO ()
         , SyncCommand -> IO [(Int, SyncBlockReq)]
         , JSContextRef
+        , JSVal
         )
 runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
   nextRefId <- newTVarIO initialRefId
@@ -308,7 +310,10 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
                 _ -> pure reqs
             Nothing -> error $ "sync callback " <> show callbackId <> " called, but does not exist"
         SyncCommand_Continue -> waitForYield
+  arg <- flip runJSMCheap env $ do --Note: This must be runJSMCheap, because we cannot wait for a sync here
+    argRef <- wrapRef $ RefId (-1)
+    JSVal <$> lazyValResult argRef
   void $ forkIO doSendReqs
-  return (processRsp, processSyncCommand, env)
+  return (processRsp, processSyncCommand, env, arg)
 
 #endif

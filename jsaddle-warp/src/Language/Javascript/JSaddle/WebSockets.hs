@@ -57,7 +57,7 @@ import Data.IORef
        (readIORef, newIORef, atomicModifyIORef')
 import Data.ByteString.Lazy (ByteString)
 import qualified Data.ByteString.Lazy as LBS (stripPrefix)
-import Language.Javascript.JSaddle (runJSM)
+import Language.Javascript.JSaddle (runJSM, JSVal)
 import qualified Data.Map as Map
 import System.Entropy (getEntropy)
 import Control.Exception (try, SomeException (..))
@@ -66,13 +66,13 @@ import Control.Exception (try, SomeException (..))
 
 import Language.Javascript.JSaddle.WebSockets.Compat (getTextMessageByteString)
 
-jsaddleOr :: ConnectionOptions -> JSM () -> Application -> IO Application
+jsaddleOr :: ConnectionOptions -> (JSVal -> JSM ()) -> Application -> IO Application
 jsaddleOr opts entryPoint otherApp = do
     syncFuncs <- newIORef Map.empty
     let wsApp :: ServerApp
         wsApp pending_conn = do
             conn <- acceptRequest pending_conn
-            (processResult, processSyncCommand, env) <- runJavaScript $ \req -> do
+            (processResult, processSyncCommand, env, arg) <- runJavaScript $ \req -> do
               sendTextData conn $ encode req
             connId <- decodeUtf8 . Base64URL.encode <$> getEntropy 24
             sendTextData conn connId
@@ -90,7 +90,7 @@ jsaddleOr opts entryPoint otherApp = do
                             Left e@(SomeException _) -> putStrLn $ "jsaddle processResult failed: " <> show e
                             Right _ -> return ()
                     _ -> error "jsaddle WebSocket unexpected binary data"
-            try (runJSM entryPoint env) >>= \case
+            try (runJSM (entryPoint arg) env) >>= \case
               Left e@(SomeException _) -> putStrLn $ "done: left: " <> show e
               Right _ -> putStrLn $ "done: right"
             waitTillClosed conn
@@ -141,7 +141,7 @@ jsaddleAppWithJsOr js otherApp req sendResponse =
   fromMaybe (otherApp req sendResponse)
     (jsaddleAppPartialWithJs js req sendResponse)
 
-jsaddleWithAppOr :: ConnectionOptions -> JSM () -> Application -> IO Application
+jsaddleWithAppOr :: ConnectionOptions -> (JSVal -> JSM ()) -> Application -> IO Application
 jsaddleWithAppOr opts entryPoint otherApp = jsaddleOr opts entryPoint $ \req sendResponse ->
   (fromMaybe (otherApp req sendResponse)
      (jsaddleAppPartial req sendResponse))
@@ -172,7 +172,7 @@ jsaddleJs' jsaddleUri refreshOnLoad = jsaddleCoreJs <> "\
     \}\n\
     \\n\
     \var connect = function() {\n\
-    \    var wsaddress = "
+    \    var wsaddress = (typeof(JSADDLE_ROOT) !== 'undefined') ? JSADDLE_ROOT.replace('http', 'ws') : "
       <> maybe "window.location.protocol.replace('http', 'ws')+\"//\"+window.location.hostname+(window.location.port?(\":\"+window.location.port):\"\")"
             (\ s -> "\"ws" <> s <> "\"")
             (jsaddleUri >>= LBS.stripPrefix "http")
@@ -187,12 +187,11 @@ jsaddleJs' jsaddleUri refreshOnLoad = jsaddleCoreJs <> "\
     \      xhr.send(JSON.stringify(v));\n\
     \      return JSON.parse(xhr.response);\n\
     \    };\n\
-    \    var core = jsaddleCoreJs(window, function(a) {\n\
-    \      ws.send(JSON.stringify(a));\n\
-    \    }, sync, 10 /* RESPONSE_BUFFER_MAX_SIZE (0 to disable) */);\n\
-    \    var syncKey = \"\";\n\
     \\n\
     \    ws.onopen = function(e) {\n\
+    \        var core = jsaddleCoreJs(window, function(a) {\n\
+    \          ws.send(JSON.stringify(a));\n\
+    \        }, sync, 10 /* RESPONSE_BUFFER_MAX_SIZE (0 to disable) */, (typeof(arg) !== 'undefined') ? arg : undefined);\n\
     \\n\
     \        ws.onmessage = function(c) {\n\
     \            connId = c.data;\n\

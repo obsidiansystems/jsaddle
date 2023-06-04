@@ -27,7 +27,7 @@ import Network.Wai.Handler.Warp
        (defaultSettings, setTimeout, setPort, runSettings)
 import Network.WebSockets (defaultConnectionOptions)
 
-import Language.Javascript.JSaddle.Types (JSM)
+import Language.Javascript.JSaddle.Types (JSM, JSVal)
 import Language.Javascript.JSaddle.WebSockets
 import Language.Javascript.JSaddle.Warp.Debug
 #endif
@@ -35,10 +35,10 @@ import Language.Javascript.JSaddle.Warp.Debug
 -- | Run the given 'JSM' action as the main entry point.  Either directly
 --   in GHCJS or as a Warp server on the given port on GHC.
 #ifdef ghcjs_HOST_OS
-run :: Int -> IO () -> IO ()
-run _port = id
+run :: Int -> (() -> IO ()) -> IO ()
+run _port x = x ()
 #else
-run :: Int -> JSM () -> IO ()
+run :: Int -> (JSVal -> JSM ()) -> IO ()
 run port f = do
     putStrLn $ "jsaddle: running on port " ++ show port
     runSettings (setPort port (setTimeout 3600 defaultSettings)) =<<
