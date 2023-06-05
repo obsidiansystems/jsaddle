@@ -273,7 +273,7 @@ jsaddleCoreJs = "\
     \          // returning first, it won't be available\n\
     \          setTimeout(processAllEnqueuedReqs, 0);\n\
     \        }\n\
-    \        return syncReq.contents[0];\n\
+    \        return unwrapVal(syncReq.contents);\n\
     \      case 'Throw':\n\
     \        // Ensure we are throwing at the right depth\n\
     \        if (syncDepth !== syncReq.contents[0]) {\n\
@@ -334,7 +334,7 @@ jsaddleCoreJs = "\
     \        break;\n\
     \      case 'NewSyncCallback':\n\
     \        result(req.contents[1], function() {\n\
-    \          return unwrapVal(runSyncCallback(req.contents[0], wrapVal(this), Array.prototype.slice.call(arguments).map(wrapVal)));\n\
+    \          return runSyncCallback(req.contents[0], wrapVal(this), Array.prototype.slice.call(arguments).map(wrapVal));\n\
     \        });\n\
     \        break;\n\
     \      case 'NewAsyncCallback':\n\
