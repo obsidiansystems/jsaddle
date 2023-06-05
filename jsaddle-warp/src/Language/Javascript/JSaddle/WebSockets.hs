@@ -111,6 +111,15 @@ jsaddleOr opts entryPoint otherApp = do
 
         syncHandler :: Application
         syncHandler req sendResponse = case (W.requestMethod req, W.pathInfo req) of
+            ("OPTIONS", ["sync", connId]) -> do
+              sendResponse $ W.responseLBS
+                H.status200
+                [ ("Allow", "OPTIONS, POST")
+                , ("Access-Control-Allow-Origin", "*")
+                , ("Access-Control-Allow-Methods", "OPTIONS, POST")
+                , ("Access-Control-Allow-Headers", "content-type")
+                ]
+                ""
             ("POST", ["sync", connId]) -> do
                 Just syncFunc <- Map.lookup connId <$> readIORef syncFuncs
                 body <- lazyRequestBody req
