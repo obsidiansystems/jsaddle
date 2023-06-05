@@ -191,7 +191,7 @@ jsaddleJs' jsaddleUri refreshOnLoad = jsaddleCoreJs <> "\
     \    var connId;\n\
     \    var sync = function(v) {\n\
     \      var xhr = new XMLHttpRequest();\n\
-    \      xhr.open('POST', '" <> fromMaybe "" jsaddleUri <> "/sync/' + connId, false);\n\
+    \      xhr.open('POST', ((typeof(JSADDLE_ROOT) !== 'undefined') ? JSADDLE_ROOT : '" <> fromMaybe "" jsaddleUri <> "') + '/sync/' + connId, false);\n\
     \      xhr.setRequestHeader(\"Content-type\", \"application/json\");\n\
     \      xhr.send(JSON.stringify(v));\n\
     \      return JSON.parse(xhr.responseText);\n\
