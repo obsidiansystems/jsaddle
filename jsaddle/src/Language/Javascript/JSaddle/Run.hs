@@ -49,17 +49,22 @@ import Control.Monad.Except (catchError)
 import Control.Monad.Trans.Reader (runReaderT, asks)
 import Control.Monad.IO.Class (MonadIO(..))
 import Control.Monad.STM (atomically)
-import Control.Concurrent (myThreadId, forkIO, threadDelay)
+import Control.Concurrent (myThreadId, forkIO, threadDelay, forkOS)
 import Control.Concurrent.Async (race_, race)
 import Control.Concurrent.STM.TVar (writeTVar, readTVar, newTVarIO, modifyTVar', readTVarIO)
+import Control.Concurrent.Chan
 import Control.Concurrent.MVar
-       (putMVar, takeMVar, newMVar, newEmptyMVar, modifyMVar, modifyMVar_, swapMVar, tryPutMVar, MVar)
+       (putMVar, takeMVar, newMVar, newEmptyMVar, modifyMVar, modifyMVar_, swapMVar, tryPutMVar, MVar, tryReadMVar)
+
+import Control.Exception
 
 import Data.Monoid ((<>))
 import Data.Map (Map)
 import Data.Maybe
 import qualified Data.Map as M
+import Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Text.IO as T
 import GHCJS.Prim.Internal (primToJSVal)
 
 import Language.Javascript.JSaddle.Types
@@ -85,6 +90,37 @@ runJavaScript
   -- Tested with jsaddle-benchmark (https://github.com/obsidiansystems/jsaddle-benchmark)
 runJavaScript = runJavaScriptInt (500 {- 0.5 ms -}) 100
 
+jsConnectionManager
+  :: Int
+  -- ^ Timeout for sending async requests in microseconds
+  -> Int
+  -- ^ Max size of async requests batch size
+  -> ([TryReq] -> IO ())
+  -> IO ( TryReq -> IO ()
+        , MVar ()
+        )
+jsConnectionManager sendReqsTimeout pendingReqsLimit sendReqsBatch = do
+  sendReqsBatchVar <- newMVar ()
+  pendingReqs <- newTVarIO []
+  pendingReqsCount <- newTVarIO (0 :: Int)
+  let doSendReqs = forever $ do
+        race_ (threadDelay sendReqsTimeout) (takeMVar sendReqsBatchVar)
+        reqs <- atomically $ do
+          writeTVar pendingReqsCount 0
+          reqs <- readTVar pendingReqs
+          writeTVar pendingReqs []
+          pure $ reverse reqs
+        unless (null reqs) $ sendReqsBatch reqs
+      sendReqAsync req = do
+        count <- atomically $ do
+          modifyTVar' pendingReqs ((:) req)
+          c <- readTVar pendingReqsCount
+          writeTVar pendingReqsCount (succ c)
+          pure (succ c)
+        when (count > pendingReqsLimit) $ void $ tryPutMVar sendReqsBatchVar ()
+  void $ forkIO doSendReqs
+  pure (sendReqAsync, sendReqsBatchVar)
+
 runJavaScriptInt
   :: Int
   -- ^ Timeout for sending async requests in microseconds
@@ -98,6 +134,7 @@ runJavaScriptInt
         , JSVal
         )
 runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
+  (sendReqAsync, sendReqsBatchVar) <- jsConnectionManager sendReqsTimeout pendingReqsLimit sendReqsBatch
   nextRefId <- newTVarIO initialRefId
   nextGetJsonReqId <- newTVarIO $ GetJsonReqId 1
   getJsonReqs <- newTVarIO M.empty
@@ -114,15 +151,25 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
   syncState <- newMVar SyncState_InSync
   nextSyncReqId <- newTVarIO $ SyncReqId 1
   syncReqs <- newTVarIO mempty
-  sendReqsBatchVar <- newMVar ()
-  pendingReqs <- newTVarIO []
-  pendingReqsCount <- newTVarIO (0 :: Int)
   threadId <- myThreadId
+  logQueue <- newChan
+  forkIO $ forever $ do
+    logLine <- readChan logQueue
+    T.putStrLn logLine
+  let log = writeChan logQueue
+  forkIO $ forever $ do
+    yieldReady <- tryReadMVar yieldReadyVar
+    T.putStrLn $ "yieldReadyVar: " <> tshow yieldReady
+    threadDelay 1000000
   let enqueueSyncBlockRequest depth req = do
         doPutMVar <- modifyMVar yieldAccumVar $ \(resultReady, old) -> do
           let !new = (depth, SyncBlockReq_Req req) : old
           return ((resultReady, new), null old && not resultReady)
-        when doPutMVar $ putMVar yieldReadyVar ()
+        log $ "enqueueSyncBlockRequest: depth " <> tshow depth <> ", doPutMVar " <> tshow doPutMVar
+        when doPutMVar $ do
+          log $ "enqueueSyncBlockRequest: putting yieldReadyVar"
+          putMVar yieldReadyVar ()
+          log $ "enqueueSyncBlockRequest: done putting yieldReadyVar"
       tryEnterSyncFrame :: (Int -> MVar TryId -> IO CallbackResult) -> IO [(Int, SyncBlockReq)]
       tryEnterSyncFrame startNewFrame = modifyMVar syncCallbackState $ \(oldDepth, readyFrames, oldFrameTries) -> modifyMVar yieldAccumVar $ \(resultReady, old) -> do
         let
@@ -146,7 +193,9 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
             (\t -> M.insertWith (error "frame's tryId already present") newDepth t oldFrameTries)
               <$> takeMVar tryMVar
           else pure oldFrameTries
-        unless (newResultReady || (null old && not resultReady)) $ takeMVar yieldReadyVar
+        unless (newResultReady || (null old && not resultReady)) $ do
+          log $ "tryEnterSyncFrame: taking yieldReadyVar"
+          takeMVar yieldReadyVar
         return ((newResultReady, []), ((newDepth, readyFrames, newFrameTries), new))
       exitSyncFrame :: Int -> CallbackResult -> IO ()
       exitSyncFrame myDepth myRetVal = modifyMVar_ syncCallbackState $ \(oldDepth, oldReadyFrames, oldFrameTries) -> case oldDepth `compare` myDepth of
@@ -178,7 +227,9 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
               mapM_ stopTry (M.elems toStop)
               pure newFrameTries
           when (myDepth == oldDepth) $ modifyMVar_ yieldAccumVar $ \(resultReady, old) -> do
-            when ((null old) && (not resultReady)) $ putMVar yieldReadyVar ()
+            when ((null old) && (not resultReady)) $ do
+              log $ "exitSyncFrame: putting yieldReadyVar"
+              putMVar yieldReadyVar ()
             return (True, old)
           return (oldDepth, newReadyFrames, newFrameTries)
 
@@ -194,8 +245,11 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
         requests <- reverse . snd <$> swapMVar yieldAccumVar (False, [])
         pure $ ((newDepth, newReadyFrames, oldFrameTries), allResults ++ requests)
       waitForYield = do
+        log $ "waitForYield: Started"
         takeMVar yieldReadyVar
+        log $ "waitForYield: Got yieldReadyVar"
         reqs <- yield
+        log $ "waitForYield: Reqs: " <> tshow reqs
         let shortCircuitReqs = map (canShortCircuitReq . snd) reqs
             canShortCircuitReq = \case
               SyncBlockReq_Req r -> case _tryReq_req r of
@@ -251,24 +305,13 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
           case mThisSync of
             Nothing -> putStrLn $ "Rsp_Sync: " <> show syncReqId <> " not found"
             Just thisSync -> putMVar thisSync ()
-      sendReqAsync req = do
-        count <- atomically $ do
-          modifyTVar' pendingReqs ((:) req)
-          c <- readTVar pendingReqsCount
-          writeTVar pendingReqsCount (succ c)
-          pure (succ c)
-        when (count > pendingReqsLimit) $ void $ tryPutMVar sendReqsBatchVar ()
-      doSendReqs = forever $ do
-        race_ (threadDelay sendReqsTimeout) (takeMVar sendReqsBatchVar)
-        reqs <- atomically $ do
-          writeTVar pendingReqsCount 0
-          reqs <- readTVar pendingReqs
-          writeTVar pendingReqs []
-          pure $ reverse reqs
-        unless (null reqs) $ sendReqsBatch reqs
       env = JSContextRef
-        { _jsContextRef_sendReq = sendReqAsync
-        , _jsContextRef_sendReqAsync = sendReqAsync
+        { _jsContextRef_sendReq = \req -> do
+            log $ "sendReq: " <> tshow req
+            sendReqAsync req
+        , _jsContextRef_sendReqAsync = \req -> do
+            log $ "sendReqAsync: " <> tshow req
+            sendReqAsync req
         , _jsContextRef_sendReqsBatchVar = sendReqsBatchVar
         , _jsContextRef_syncThreadId = Nothing
         , _jsContextRef_myThreadId = threadId
@@ -291,16 +334,21 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
           mCallback <- fmap (M.lookup callbackId) $ atomically $ readTVar callbacks
           case mCallback of
             Just (callback :: JSVal -> [JSVal] -> JSM JSVal) -> do
+              log $ "processSyncCommand: Found callback " <> tshow callbackId
               reqs <- tryEnterSyncFrame $ \myDepth tryIdMVar -> do
                 threadId <- myThreadId
                 syncStateLocal <- newMVar SyncState_InSync
-                let syncEnv = env { _jsContextRef_sendReq = enqueueSyncBlockRequest myDepth
+                let syncEnv = env { _jsContextRef_sendReq = \req -> do
+--                                      evaluate $ tshow req
+                                      log $ "syncEnv sendReq: " <> tshow req
+                                      enqueueSyncBlockRequest myDepth req
                                   , _jsContextRef_syncThreadId = Just threadId
                                   , _jsContextRef_myThreadId = threadId
                                   , _jsContextRef_syncState = syncStateLocal }
                     run = do
                       JSM $ asks _jsContextRef_myTryId >>= liftIO . putMVar tryIdMVar
                       (Right <$>) $ join $ callback <$> wrapJSVal this <*> traverse wrapJSVal args
+                log $ "processSyncCommand: Running callback " <> tshow callbackId
                 try $ flip runReaderT syncEnv $ unJSM $
                   run `catchError` (\e -> do
                     exceptionStr <- T.unpack <$> valToText (unJavaScriptException e)
@@ -313,7 +361,18 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
   arg <- flip runJSMCheap env $ do --Note: This must be runJSMCheap, because we cannot wait for a sync here
     argRef <- wrapRef $ RefId (-1)
     JSVal <$> lazyValResult argRef
-  void $ forkIO doSendReqs
-  return (processRsp, processSyncCommand, env, arg)
+  return
+    ( \rsp -> do
+        putStrLn $ "processRsp: " <> show rsp
+        processRsp rsp
+    , \syncCmd -> do
+        putStrLn $ "processSyncCommand: " <> show syncCmd
+        processSyncCommand syncCmd
+    , env
+    , arg
+    )
 
 #endif
+
+tshow :: Show a => a -> Text
+tshow = T.pack . show

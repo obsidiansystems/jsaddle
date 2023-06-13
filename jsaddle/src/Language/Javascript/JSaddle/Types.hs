@@ -216,6 +216,7 @@ data JSContextRef = JSContextRef
   -- When executing in a sync frame, wait for results of these
   , _jsContextRef_waitForResults :: !(Maybe (TVar [Weak JSVal]))
   }
+
 #endif
 
 -- | The 'JSM' monad keeps track of the JavaScript execution context.
@@ -565,7 +566,7 @@ data SyncBlockReq
   = SyncBlockReq_Req TryReq
   | SyncBlockReq_Result ValId
   | SyncBlockReq_Throw Int (Either Text ValId) -- ^ Int is the frame depth which should receive throw
-   deriving (Generic)
+   deriving (Generic, Show)
 
 instance ToJSON SyncBlockReq where
   toEncoding = A.genericToEncoding $ aesonOptions "SyncBlockReq"
@@ -577,7 +578,7 @@ data TryReq = TryReq
   { _tryReq_tryId :: TryId
   , _tryReq_req :: Req ValId RefId
   }
-  deriving (Generic)
+  deriving (Generic, Show)
 
 instance ToJSON TryReq where
   toEncoding = A.genericToEncoding $ aesonOptions "TryReq"
@@ -698,6 +699,7 @@ lazyValResult ref = JSM $ do
             , _tryReq_req = Req_TriggerSendRsp
             }
           void $ tryPutMVar sendReqsBatchVar ()
+          putStrLn $ "Blocking on lazy JSVal:" <> show refId
           takeMVar resultVar
       writeIORef refRef Nothing
       return result
@@ -768,11 +770,12 @@ getJson' :: JSVal -> JSM (IO A.Value)
 getJson' val = do
   getJsonReqId <- newId _jsContextRef_nextGetJsonReqId
   getJsonReqs <- JSM $ asks _jsContextRef_getJsonReqs
-  sendReqsBatchVar <- JSM $ asks _jsContextRef_sendReqsBatchVar
   resultVar <- JSM $ liftIO $ newEmptyMVar
   JSM $ liftIO $ atomically $ modifyTVar' getJsonReqs $ M.insert getJsonReqId resultVar
   sendReq $ Req_GetJson val getJsonReqId
-  JSM $ liftIO $ void $ tryPutMVar sendReqsBatchVar ()
+  JSM $ do
+    sendReqsBatchVar <- asks _jsContextRef_sendReqsBatchVar
+    liftIO $ void $ tryPutMVar sendReqsBatchVar ()
   return $ takeMVar resultVar
 
 withJSValOutput_ :: (Ref -> JSM ()) -> JSM JSVal
