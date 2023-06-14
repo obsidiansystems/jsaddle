@@ -105,7 +105,11 @@ test-suite spec
   build-depends:
       base ==4.*
     , hspec ==2.*
+    , jsaddle
     , jsaddle-warp
+    , text
+    , warp
+    , websockets
   other-modules:
   default-language: Haskell2010
   -- build-tool-depends: hspec-discover:hspec-discover == 2.*
