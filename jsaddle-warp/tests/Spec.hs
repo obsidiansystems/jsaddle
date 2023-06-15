@@ -2,7 +2,9 @@
 module Main where
 
 import Control.Concurrent
+import Control.Exception (bracket)
 import Control.Monad (void, forever)
+import Control.Monad.Except
 import Control.Monad.IO.Class (MonadIO(..))
 import qualified Data.ByteString.Lazy.Char8 as BS
 import qualified Data.Text as T
@@ -35,7 +37,7 @@ main = do
       jsaddleOr defaultConnectionOptions f jsaddleApp
 
   forkIO $ void $ readProcess "node" ["jsaddle-warp/node-client/index.js"] "" >>= putStr
-  hspec $ before (takeMVar context) spec
+  hspec $ aroundAll (bracket (takeMVar context) (putMVar context)) spec
 
   where
     f1 = do
@@ -56,3 +58,21 @@ spec = do
       result <- flip runJSM ctx $ do
         valToText =<< val "Hello World" ! "length"
       result `shouldBe` (T.pack "11")
+
+  describe "Bugs" $ do
+    it "does not get deadlocked when making use of JSVal just created" $ \ctx -> do
+      result <- flip runJSM ctx $ do
+        (callbackId, jsVal) <- newSyncCallback'' $ \_ _ [arg] -> do
+          _ <- (global ! "console") # "log" $ ["Starting Test"]
+          myPropsJson <- valToJSON arg
+          (global ! "console") # "log" $ [toJSVal myPropsJson]
+        o <- obj
+        (o <# "x") "Hello";
+        call (Object jsVal) o [o] `catchError`
+          \(JavaScriptException e) -> do
+              msg <- valToText e
+              liftIO $ putStrLn $ "Error: " <> T.unpack msg
+              pure e
+        valToText =<< val "Hello World" ! "length"
+      result `shouldBe` (T.pack "11")
+
