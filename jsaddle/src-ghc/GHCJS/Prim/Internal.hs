@@ -1,4 +1,5 @@
 {-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE DeriveTraversable #-}
@@ -25,6 +26,7 @@ import Data.Text (Text)
 import qualified Data.Aeson as A
 import Data.Scientific (toRealFloat)
 import Data.Foldable
+import GHC.Generics (Generic)
 
 -- A reference to a particular JavaScript value inside the JavaScript context
 type JSValueRef = Int64
@@ -77,7 +79,9 @@ instance FromJSON a => FromJSON (PrimVal a) where
     A.Object _ -> fail "unexpected object"
 
 -- | A reference to a value that exists in the javascript heap.  If positive, allocated by the Haskell side; if negative, allocated by the javascript side; if zero, always refers to 'undefined'.  In either case, must be freed by the Haskell side using a finalizer.
-newtype RefId = RefId { unRefId :: Int64 } deriving (Show, Read, Eq, Ord, Enum, ToJSON, FromJSON)
+newtype RefId = RefId { unRefId :: Int64 } deriving (Show, Read, Eq, Ord, Enum, ToJSON, FromJSON, Generic)
+
+instance NFData RefId
 
 isJsAllocatedRefId :: RefId -> Bool
 isJsAllocatedRefId = (< 0) . unRefId
