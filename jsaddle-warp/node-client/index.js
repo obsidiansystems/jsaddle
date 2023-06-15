@@ -1,5 +1,7 @@
 const http = require('http');
 const ws = require('ws');
+const XMLHttpRequest = require("xmlhttprequest").XMLHttpRequest;
+
 
 let request = http.get('http://0.0.0.0:3709/jsaddle.js', (res) => {
   if (res.statusCode !== 200) {
