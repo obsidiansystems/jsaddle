@@ -1,10 +1,10 @@
-{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE LambdaCase #-}
 module Main where
 
-import Control.Concurrent (forkIO, threadDelay)
-import Control.Monad (void)
+import Control.Concurrent
+import Control.Monad (void, forever)
 import Control.Monad.IO.Class (MonadIO(..))
+import qualified Data.ByteString.Lazy.Char8 as BS
 import qualified Data.Text as T
 
 import Language.Javascript.JSaddle
@@ -26,27 +26,33 @@ main = do
     e           -> do
       putStrLn "node not found"
       exitWith e
+  context <- newEmptyMVar
+  let f = do
+            liftIO $ tryTakeMVar context
+            liftIO . putMVar context =<< askJSM
+            liftIO . forever $ threadDelay 1000000
   forkIO $ runSettings (setPort port (setTimeout 3600 defaultSettings)) =<<
       jsaddleOr defaultConnectionOptions f jsaddleApp
 
   forkIO $ void $ readProcess "node" ["jsaddle-warp/node-client/index.js"] "" >>= putStr
-  liftIO $ threadDelay $ 4*1000*1000
-  putStrLn "Done jsaddle-warp spec"
+  hspec $ before (takeMVar context) spec
 
-  where f = do
-            v <- eval ("'Hello World'.length" :: T.Text)
-            valToText v >>= liftIO . putStrLn . T.unpack
-            liftIO $ threadDelay $ 2*1000*1000
-            eval ("process.exit()" :: T.Text)
-            pure ()
-            -- hspec spec
-        port = 3709
-        jsaddleApp = jsaddleAppWithJs (jsaddleJs' (Just "http://0.0.0.0:3709") False)
+  where
+    f1 = do
+        v <- eval ("'Hello World'.length")
+        valToText v >>= liftIO . putStrLn . T.unpack
+        liftIO $ threadDelay $ 2*1000*1000
+        eval ("process.exit()")
+        pure ()
+        -- hspec spec
+    port = 3709
+    uri = BS.pack $ "http://0.0.0.0:" <> show port
+    jsaddleApp = jsaddleAppWithJs (jsaddleJs' (Just uri) False)
 
+spec :: SpecWith JSContextRef
 spec = do
-  describe "Prelude.read" $ do
-    it "can parse integers" $ do
-      read "10" `shouldBe` (10 :: Int)
-
-    it "can parse floating-point numbers" $ do
-      read "2.5" `shouldBe` (2.5 :: Float)
+  describe "Object Spec" $ do
+    it "Lookup a property based on its name." $ \ctx -> do
+      result <- flip runJSM ctx $ do
+        valToText =<< val "Hello World" ! "length"
+      result `shouldBe` (T.pack "11")
