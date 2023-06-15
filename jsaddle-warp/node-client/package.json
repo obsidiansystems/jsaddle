@@ -1,7 +1,7 @@
 {
   "name": "jsaddle-warp-node-client",
   "version": "0.1.0",
-  "description": "",
+  "description": "A minimal JS client to use with JSaddle warp testing",
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
