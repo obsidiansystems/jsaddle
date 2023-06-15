@@ -15,6 +15,8 @@ import Language.Javascript.JSaddle.WebSockets (jsaddleJs', jsaddleAppWithJs, jsa
 import Network.Wai.Handler.Warp
        (defaultSettings, setTimeout, setPort, runSettings)
 import Network.WebSockets (defaultConnectionOptions)
+
+import System.Directory (doesDirectoryExist)
 import System.Exit (exitFailure, exitWith, ExitCode(..))
 import System.Process (readProcess, system)
 

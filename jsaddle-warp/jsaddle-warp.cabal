@@ -105,6 +105,7 @@ test-suite spec
   build-depends:
       base ==4.*
     , bytestring
+    , directory
     , hspec ==2.*
     , jsaddle
     , jsaddle-warp
