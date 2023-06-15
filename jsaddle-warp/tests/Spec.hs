@@ -25,11 +25,7 @@ import Test.Hspec
 main :: IO ()
 main = do
   putStrLn "Running jsaddle-warp spec"
-  system "node --version" >>= \case
-    ExitSuccess -> return ()
-    e           -> do
-      putStrLn "node not found"
-      exitWith e
+  nodeClientPath <- setupNodeClient
   context <- newEmptyMVar
   let f = do
             liftIO $ tryTakeMVar context
@@ -38,7 +34,7 @@ main = do
   forkIO $ runSettings (setPort port (setTimeout 3600 defaultSettings)) =<<
       jsaddleOr defaultConnectionOptions f jsaddleApp
 
-  forkIO $ void $ readProcess "node" ["jsaddle-warp/node-client/index.js"] "" >>= putStr
+  forkIO $ void $ readProcess "node" [nodeClientPath, show port] "" >>= putStr
   hspec $ aroundAll (bracket (takeMVar context) (putMVar context)) spec
 
   where
@@ -52,6 +48,38 @@ main = do
     port = 3709
     uri = BS.pack $ "http://0.0.0.0:" <> show port
     jsaddleApp = jsaddleAppWithJs (jsaddleJs' (Just uri) False)
+
+setupNodeClient :: IO (FilePath)
+setupNodeClient = do
+  system "node --version" >>= \case
+    ExitSuccess -> return ()
+    e           -> do
+      putStrLn "'node' not found"
+      exitWith e
+
+  system "npm --version" >>= \case
+    ExitSuccess -> return ()
+    e           -> do
+      putStrLn "'npm' not found"
+      exitWith e
+
+  -- The 'cabal test' could be running from root of jsaddle repo, so adjust the path
+  ncExist <- doesDirectoryExist "node-client"
+  jwExist <- doesDirectoryExist "jsaddle-warp/node-client"
+  unless (ncExist || jwExist) $ do
+    putStrLn "node-client directory not found"
+    exitWith (ExitFailure 1)
+
+  let nodeClientDir = if ncExist then "node-client" else "jsaddle-warp/node-client"
+
+  nmExist <- doesDirectoryExist (nodeClientDir <> "/node_modules")
+  unless nmExist $ do
+    system ("npm install --prefix " <> nodeClientDir) >>= \case
+      ExitSuccess -> return ()
+      e           -> do
+        putStrLn "'npm install' did not succeed"
+        exitWith e
+  return nodeClientDir
 
 spec :: SpecWith JSContextRef
 spec = do
