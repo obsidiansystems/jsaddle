@@ -2,6 +2,13 @@ const http = require('http');
 const ws = require('ws');
 const XMLHttpRequest = require("xmlhttprequest").XMLHttpRequest;
 
+let port = 3709;
+
+if (process.argv[2]) {
+  port = Number(process.argv[2]);
+}
+console.log('Running client on port:', port);
+
 
 let request = http.get('http://0.0.0.0:3709/jsaddle.js', (res) => {
   if (res.statusCode !== 200) {
@@ -17,9 +24,8 @@ let request = http.get('http://0.0.0.0:3709/jsaddle.js', (res) => {
   });
 
   res.on('close', () => {
-    console.log('Retrieved all data');
+    console.log("Connecting to JSaddle running on port", port);
     eval(data);
-    console.log("connected");
   });
 });
 
