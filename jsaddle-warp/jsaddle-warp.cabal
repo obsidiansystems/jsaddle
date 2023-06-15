@@ -104,9 +104,12 @@ test-suite spec
   ghc-options: -Wall
   build-depends:
       base ==4.*
+    , bytestring
     , hspec ==2.*
     , jsaddle
     , jsaddle-warp
+    , mtl
+    , process
     , text
     , warp
     , websockets
