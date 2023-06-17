@@ -194,7 +194,7 @@ jsaddleJs' jsaddleUri refreshOnLoad = jsaddleCoreJs <> "\
     \      xhr.open('POST', ((typeof(JSADDLE_ROOT) !== 'undefined') ? JSADDLE_ROOT : '" <> fromMaybe "" jsaddleUri <> "') + '/sync/' + connId, false);\n\
     \      xhr.setRequestHeader(\"Content-type\", \"application/json\");\n\
     \      xhr.send(JSON.stringify(v));\n\
-    \      return JSON.parse(xhr.response);\n\
+    \      return JSON.parse(xhr.responseText);\n\
     \    };\n\
     \\n\
     \    ws.onopen = function(e) {\n\

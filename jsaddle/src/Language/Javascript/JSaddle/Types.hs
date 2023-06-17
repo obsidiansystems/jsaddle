@@ -118,6 +118,7 @@ module Language.Javascript.JSaddle.Types (
 #endif
 ) where
 
+import Control.DeepSeq
 import Control.Monad.IO.Class (MonadIO(..))
 #ifdef ghcjs_HOST_OS
 import Control.Exception (Exception)
@@ -474,13 +475,18 @@ type JSadddleHasCallStack = (() :: Constraint)
 
 --TODO: We know what order we issued SyncBlock, GetJson, etc. requests in, so we can probably match them up without explicit IDs
 
-newtype GetJsonReqId = GetJsonReqId { unGetJsonReqId :: Int64 } deriving (Show, Read, Eq, Ord, Enum, ToJSON, FromJSON)
+newtype GetJsonReqId = GetJsonReqId { unGetJsonReqId :: Int64 } deriving (Show, Read, Eq, Ord, Enum, ToJSON, FromJSON, Generic)
 
-newtype CallbackId = CallbackId { unCallbackId :: Int64 } deriving (Show, Read, Eq, Ord, Enum, ToJSON, FromJSON)
+newtype CallbackId = CallbackId { unCallbackId :: Int64 } deriving (Show, Read, Eq, Ord, Enum, ToJSON, FromJSON, Generic)
 
-newtype TryId = TryId { unTryId :: Int64 } deriving (Show, Read, Eq, Ord, Enum, ToJSON, FromJSON)
+newtype TryId = TryId { unTryId :: Int64 } deriving (Show, Read, Eq, Ord, Enum, ToJSON, FromJSON, Generic)
 
-newtype SyncReqId = SyncReqId { unSyncReqId :: Int64 } deriving (Show, Read, Eq, Ord, Enum, ToJSON, FromJSON)
+newtype SyncReqId = SyncReqId { unSyncReqId :: Int64 } deriving (Show, Read, Eq, Ord, Enum, ToJSON, FromJSON, Generic)
+
+instance NFData GetJsonReqId
+instance NFData CallbackId
+instance NFData TryId
+instance NFData SyncReqId
 
 aesonOptions :: String -> A.Options
 aesonOptions typeName = A.defaultOptions
@@ -504,6 +510,8 @@ data Req input output
    | Req_Sync SyncReqId
    | Req_TriggerSendRsp
    deriving (Show, Read, Eq, Generic, Functor, Foldable, Traversable)
+
+instance (NFData a, NFData b) => NFData (Req a b)
 
 instance Bifunctor Req where
   bimap = bimapDefault
@@ -579,6 +587,8 @@ data TryReq = TryReq
   , _tryReq_req :: Req ValId RefId
   }
   deriving (Generic, Show)
+
+instance NFData TryReq
 
 instance ToJSON TryReq where
   toEncoding = A.genericToEncoding $ aesonOptions "TryReq"
