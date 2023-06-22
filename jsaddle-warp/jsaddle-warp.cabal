@@ -53,8 +53,9 @@ library
     ghc-options: -ferror-spans -Wall
 
 test-suite test-tool
-    if impl(ghcjs -any) || os(ios)
-        buildable: False
+    -- Disable doctests as they dont work at the moment and the hspec tests
+    -- covers the testing
+    buildable: False
 
     build-depends:
             QuickCheck -any,
@@ -99,16 +100,21 @@ test-suite test-tool
 test-suite spec
   type: exitcode-stdio-1.0
   main-is: Spec.hs
+  other-modules:
+      Language.Javascript.JSaddle.ObjectSpec
+      Language.Javascript.JSaddle.ValueSpec
+      Language.Javascript.JSaddleSpec
   hs-source-dirs:
       tests
   ghc-options: -Wall
   build-depends:
-      base ==4.*
+      base
     , bytestring
     , directory
-    , hspec ==2.*
+    , hspec == 2.*
     , jsaddle
     , jsaddle-warp
+    , lens
     , mtl
     , process
     , text
@@ -116,4 +122,3 @@ test-suite spec
     , websockets
   other-modules:
   default-language: Haskell2010
-  -- build-tool-depends: hspec-discover:hspec-discover == 2.*

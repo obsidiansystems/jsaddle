@@ -10,7 +10,7 @@ if (process.argv[2]) {
 console.log('Running client on port:', port);
 
 
-let request = http.get('http://0.0.0.0:3709/jsaddle.js', (res) => {
+let request = http.get('http://0.0.0.0:' + port + '/jsaddle.js', (res) => {
   if (res.statusCode !== 200) {
     console.error(`Did not get an OK from the server. Code: ${res.statusCode}`);
     res.resume();
