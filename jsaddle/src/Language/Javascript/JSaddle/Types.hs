@@ -709,7 +709,6 @@ lazyValResult ref = JSM $ do
             , _tryReq_req = Req_TriggerSendRsp
             }
           void $ tryPutMVar sendReqsBatchVar ()
-          putStrLn $ "Blocking on lazy JSVal:" <> show refId
           takeMVar resultVar
       writeIORef refRef Nothing
       return result

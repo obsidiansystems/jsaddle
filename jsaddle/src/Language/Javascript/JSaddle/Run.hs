@@ -152,15 +152,14 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
   nextSyncReqId <- newTVarIO $ SyncReqId 1
   syncReqs <- newTVarIO mempty
   threadId <- myThreadId
+  {-
   logQueue <- newChan
   forkIO $ forever $ do
     logLine <- readChan logQueue
     T.putStrLn logLine
   let log = writeChan logQueue
-  forkIO $ forever $ do
-    yieldReady <- tryReadMVar yieldReadyVar
-    T.putStrLn $ "yieldReadyVar: " <> tshow yieldReady
-    threadDelay 1000000
+  -}
+  let log _ = pure ()
   let enqueueSyncBlockRequest depth req = do
         doPutMVar <- modifyMVar yieldAccumVar $ \(resultReady, old) -> do
           let !new = (depth, SyncBlockReq_Req req) : old
@@ -363,10 +362,10 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
     JSVal <$> lazyValResult argRef
   return
     ( \rsp -> do
-        putStrLn $ "processRsp: " <> show rsp
+        log $ "processRsp: " <> show rsp
         processRsp rsp
     , \syncCmd -> do
-        putStrLn $ "processSyncCommand: " <> show syncCmd
+        log $ "processSyncCommand: " <> show syncCmd
         processSyncCommand syncCmd
     , env
     , arg
