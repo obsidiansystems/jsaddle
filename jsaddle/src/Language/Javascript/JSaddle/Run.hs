@@ -56,6 +56,7 @@ import Control.Concurrent.Chan
 import Control.Concurrent.MVar
        (putMVar, takeMVar, newMVar, newEmptyMVar, modifyMVar, modifyMVar_, swapMVar, tryPutMVar, MVar, tryReadMVar)
 
+import Control.DeepSeq
 import Control.Exception
 
 import Data.Monoid ((<>))
@@ -338,7 +339,8 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
                 threadId <- myThreadId
                 syncStateLocal <- newMVar SyncState_InSync
                 let syncEnv = env { _jsContextRef_sendReq = \req -> do
---                                      evaluate $ tshow req
+                                      -- We MUST fully evaluate our req here, because if we enqueue it while it is not fully evaluated, it could have thunks inside that block on lazy JSVals.  Since we batch requests, the JSVals it's blocked on might be part of the same batch.  This will result in a lockup, since we won't be able to send the batch until we receive responses which can't be sent until after the batch has been sent.
+                                      evaluate $ rnf req
                                       log $ "syncEnv sendReq: " <> tshow req
                                       enqueueSyncBlockRequest myDepth req
                                   , _jsContextRef_syncThreadId = Just threadId
