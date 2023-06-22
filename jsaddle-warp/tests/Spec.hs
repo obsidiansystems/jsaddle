@@ -17,9 +17,9 @@ import Network.WebSockets (defaultConnectionOptions)
 
 import System.Directory (doesDirectoryExist)
 import System.Exit (exitWith, ExitCode(..))
-import System.Process (system, spawnProcess, terminateProcess)
+import System.Process (withCreateProcess, proc, system)
 
-import Test.Hspec (hspec, around, mapSubject)
+import Test.Hspec (hspec, aroundAll)
 
 main :: IO ()
 main = do
@@ -38,16 +38,8 @@ main = do
   void $ forkIO $ runSettings (setPort port (setTimeout 3600 defaultSettings)) =<<
       jsaddleOr defaultConnectionOptions f jsaddleApp
 
-
-  let
-    -- Runs a new node client for each test
-    getContext = do
-      ph <- spawnProcess "node" [nodeClientPath, show port]
-      ctx <- takeMVar context
-      return (ph, ctx)
-    releaseContext (ph, _) = do
-      terminateProcess ph
-  hspec $ around (bracket getContext releaseContext) (mapSubject snd spec)
+  withCreateProcess (proc "node" [nodeClientPath, show port]) $ \_ _ _ _ -> do
+    hspec $ aroundAll (bracket (takeMVar context) (putMVar context)) spec
 
 
 setupNodeClient :: IO (FilePath)
