@@ -43,7 +43,7 @@ module Language.Javascript.JSaddle.Run (
 ) where
 
 #ifndef ghcjs_HOST_OS
-import Control.Exception (try, SomeException(..), throwIO)
+import Control.Exception (try, SomeException(..), throwIO, evaluate)
 import Control.Monad (when, join, void, unless, forever)
 import Control.Monad.Except (catchError)
 import Control.Monad.Trans.Reader (runReaderT, asks)
@@ -54,6 +54,8 @@ import Control.Concurrent.Async (race_, race)
 import Control.Concurrent.STM.TVar (writeTVar, readTVar, newTVarIO, modifyTVar', readTVarIO)
 import Control.Concurrent.MVar
        (putMVar, takeMVar, newMVar, newEmptyMVar, modifyMVar, modifyMVar_, swapMVar, tryPutMVar, MVar)
+
+import Control.DeepSeq
 
 import Data.Monoid ((<>))
 import Data.Map (Map)
@@ -292,7 +294,10 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
               reqs <- tryEnterSyncFrame $ \myDepth tryIdMVar -> do
                 threadId <- myThreadId
                 syncStateLocal <- newMVar SyncState_InSync
-                let syncEnv = env { _jsContextRef_sendReq = enqueueSyncBlockRequest myDepth
+                let syncEnv = env { _jsContextRef_sendReq = \req -> do
+                                      -- We MUST fully evaluate our req here, because if we enqueue it while it is not fully evaluated, it could have thunks inside that block on lazy JSVals.  Since we batch requests, the JSVals it's blocked on might be part of the same batch.  This will result in a lockup, since we won't be able to send the batch until we receive responses which can't be sent until after the batch has been sent.
+                                      evaluate $ rnf req
+                                      enqueueSyncBlockRequest myDepth req
                                   , _jsContextRef_syncThreadId = Just threadId
                                   , _jsContextRef_myThreadId = threadId
                                   , _jsContextRef_syncState = syncStateLocal }
