@@ -116,7 +116,17 @@ getGlobal (JSString name) = do
 newArray :: [JSVal] -> JSM JSVal
 newArray xs = do
   array <- getGlobal "Array"
-  callAsConstructor' array xs
+  case xs of
+    -- If Array() is called with a single argument, and it is a number, instead
+    -- of making a single-element array with that number in it, it makes an
+    -- array of that length.  Since we may not immediately know whether a given
+    -- JSVal is a number or not, we just always use a different method to
+    -- construct single-element arrays.
+    [x] -> do
+      result <- callAsConstructor' array []
+      setPropertyAtIndex 0 x (Object result)
+      pure result
+    _ -> callAsConstructor' array xs
 {-# INLINE newArray #-}
 
 evaluateScript :: JSString -> JSM JSVal
