@@ -164,6 +164,15 @@ indexResponse = W.responseLBS H.status200 [("Content-Type", "text/html")] indexH
 jsaddleAppPartialWithJs :: ByteString -> Request -> (Response -> IO ResponseReceived) -> Maybe (IO ResponseReceived)
 jsaddleAppPartialWithJs js req sendResponse = case (W.requestMethod req, W.pathInfo req) of
     ("GET", []) -> Just $ sendResponse indexResponse
+    ("OPTIONS", ["jsaddle.js"]) -> Just $ do
+      sendResponse $ W.responseLBS
+        H.status200
+        [ ("Allow", "OPTIONS, GET")
+        , ("Access-Control-Allow-Origin", "*")
+        , ("Access-Control-Allow-Methods", "OPTIONS, POST")
+        , ("Access-Control-Allow-Headers", "content-type")
+        ]
+        ""
     ("GET", ["jsaddle.js"]) -> Just $ sendResponse $ W.responseLBS H.status200 [("Content-Type", "application/javascript"), ("Access-Control-Allow-Origin", "*")] js
     _ -> Nothing
 
