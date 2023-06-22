@@ -26,7 +26,7 @@ main = do
   nodeClientPath <- setupNodeClient
   context <- newEmptyMVar
   let
-    f = do
+    f _ = do
       _ <- liftIO $ tryTakeMVar context
       liftIO . putMVar context =<< askJSM
       liftIO . forever $ threadDelay maxBound
