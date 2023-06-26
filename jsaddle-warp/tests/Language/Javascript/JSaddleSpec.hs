@@ -1,5 +1,6 @@
 module Language.Javascript.JSaddleSpec where
 
+import Prelude hiding ((!!))
 import Control.Monad.Except
 import Control.Monad.IO.Class (MonadIO(..))
 import qualified Data.Text as T
@@ -34,3 +35,11 @@ misc = do
               pure e
         valToText =<< val "Hello World" ! "length"
       result `shouldBe` (T.pack "11")
+
+    it "Creates an array containing a single number" $ \ctx -> do
+      -- The Array constructor has a special case for a single number
+      -- which is not the behaviour we expect when we create an array with a single number
+      -- https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/Array#parameters
+      -- Make sure we construct the array containing the specified number
+      result <- flip runJSM ctx $ valToText =<< (array [5::Int] !! 0)
+      result `shouldBe` (T.pack "5")
