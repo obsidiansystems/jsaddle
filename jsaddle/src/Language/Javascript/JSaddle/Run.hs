@@ -373,7 +373,6 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
     , arg
     )
 
-#endif
-
 tshow :: Show a => a -> Text
 tshow = T.pack . show
+#endif

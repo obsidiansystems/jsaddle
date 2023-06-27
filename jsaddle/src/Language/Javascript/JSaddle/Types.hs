@@ -118,7 +118,6 @@ module Language.Javascript.JSaddle.Types (
 #endif
 ) where
 
-import Control.DeepSeq
 import Control.Monad.IO.Class (MonadIO(..))
 #ifdef ghcjs_HOST_OS
 import Control.Exception (Exception)
@@ -128,6 +127,7 @@ import JavaScript.Object.Internal (Object(..))
 import JavaScript.Array.Internal (SomeJSArray(..), JSArray, MutableJSArray, STJSArray)
 import GHCJS.Nullable (Nullable(..))
 #else
+import Control.DeepSeq
 import GHCJS.Prim.Internal
 import Data.JSString.Internal.Type (JSString(..))
 import Data.Monoid
