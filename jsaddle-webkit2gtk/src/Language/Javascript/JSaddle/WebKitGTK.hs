@@ -3,6 +3,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE MonoLocalBinds #-}
 -----------------------------------------------------------------------------
 --
 -- Module      :  Language.Javascript.JSaddle.WebSockets
@@ -72,16 +73,21 @@ import GI.WebKit2
         userContentManagerRegisterScriptMessageHandler,
         javascriptResultGetJsValue,
         webViewGetUserContentManager,
-        mk_UserContentManagerScriptMessageReceivedCallback,
-        wrap_UserContentManagerScriptMessageReceivedCallback,
         webViewRunJavascript, LoadEvent(..),
         UserContentManagerScriptMessageReceivedCallback, webViewLoadHtml,
         onWebViewLoadChanged, setSettingsEnableDeveloperExtras,
-        webViewSetSettings, webViewGetSettings, ScriptDialogType(..))
+        webViewSetSettings, webViewGetSettings, ScriptDialogType(..), IsUserContentManager)
+import qualified GI.WebKit2
 
 import Language.Javascript.JSaddle (JSM, Rsp, SyncCommand, ValId, TryReq, SyncBlockReq, runJSM)
 import Language.Javascript.JSaddle.Run (runJavaScript)
 import Language.Javascript.JSaddle.Run.Files (ghcjsHelpers, jsaddleCoreJs)
+
+noAdjustment :: Maybe Adjustment
+noAdjustment = Nothing
+
+noCancellable :: Maybe Cancellable
+noCancellable = Nothing
 
 quitWebView :: WebView -> IO ()
 quitWebView wv = postGUIAsync $ do w <- widgetGetToplevel wv --TODO: Shouldn't this be postGUISync?
@@ -105,7 +111,7 @@ run main = do
     _ <- timeoutAdd PRIORITY_HIGH 10 (yield >> return True)
     windowSetDefaultSize window 900 600
     windowSetPosition window WindowPositionCenter
-    scrollWin <- scrolledWindowNew (Nothing :: Maybe Adjustment) (Nothing :: Maybe Adjustment)
+    scrollWin <- scrolledWindowNew noAdjustment noAdjustment
     contentManager <- userContentManagerNew
     webView <- webViewNewWithUserContentManager contentManager
     settings <- webViewGetSettings webView
@@ -119,9 +125,9 @@ run main = do
     _ <- onWidgetDestroy window mainQuit
     widgetShowAll window
     pwd <- getCurrentDirectory
-    void . onWebViewLoadChanged webView $ \case
-        LoadEventFinished -> runInWebView main webView
-        _ -> return ()
+    let webViewLoadChangedCallback LoadEventFinished = runInWebView main webView
+        webViewLoadChangedCallback _                 = return ()
+    void $ onWebViewLoadChanged webView webViewLoadChangedCallback
     webViewLoadHtml webView "" . Just $ "file://" <> T.pack pwd <> "/index.html"
     installQuitHandler webView
     Gtk.main
@@ -129,25 +135,29 @@ run main = do
 runInWebView :: JSM () -> WebView -> IO ()
 runInWebView f webView = do
     (processResults, processSyncCommand, jsCtx) <- runJavaScript $ \batch -> postGUIAsync $
-        webViewRunJavascript webView (decodeUtf8 . toStrict $ "runJSaddleBatch(" <> encode batch <> ");") (Nothing :: Maybe Cancellable) Nothing
+        webViewRunJavascript webView (decodeUtf8 . toStrict $ "runJSaddleBatch(" <> encode batch <> ");") noCancellable Nothing
 
     addJSaddleHandler webView processResults processSyncCommand
-    webViewRunJavascript webView (decodeUtf8 $ toStrict jsaddleJs) (Nothing :: Maybe Cancellable) . Just $
-        \_obj _asyncResult -> do
+    webViewRunJavascript webView (decodeUtf8 $ toStrict jsaddleJs) noCancellable . Just $
+        \_obj _asyncResult _data -> do
             _ <- forkIO $ runJSM f jsCtx
             return ()
 
-onUserContentManagerScriptMessageReceived :: (GObject a, MonadIO m) => a -> UserContentManagerScriptMessageReceivedCallback -> m SignalHandlerId
+onUserContentManagerScriptMessageReceived :: (IsUserContentManager a, MonadIO m) => a -> UserContentManagerScriptMessageReceivedCallback -> m SignalHandlerId
+#if MIN_VERSION_haskell_gi_base(0,26,0)
+onUserContentManagerScriptMessageReceived obj cb = GI.WebKit2.onUserContentManagerScriptMessageReceived obj Nothing cb
+#else
 onUserContentManagerScriptMessageReceived obj cb = liftIO $ connectUserContentManagerScriptMessageReceived obj cb SignalConnectBefore
 
 connectUserContentManagerScriptMessageReceived :: (GObject a, MonadIO m) =>
                                                   a -> UserContentManagerScriptMessageReceivedCallback -> SignalConnectMode -> m SignalHandlerId
 connectUserContentManagerScriptMessageReceived obj cb after = liftIO $ do
-    let cb' = wrap_UserContentManagerScriptMessageReceivedCallback cb
-    cb'' <- mk_UserContentManagerScriptMessageReceivedCallback cb'
+    let cb' = GI.WebKit2.wrap_UserContentManagerScriptMessageReceivedCallback cb
+    cb'' <- GI.WebKit2.mk_UserContentManagerScriptMessageReceivedCallback cb'
     connectSignalFunPtr obj "script-message-received::jsaddle" cb'' after
 #if MIN_VERSION_haskell_gi_base(0,23,0)
       Nothing
+#endif
 #endif
 
 addJSaddleHandler :: WebView -> ([Rsp] -> IO ()) -> (SyncCommand -> IO [(Int, SyncBlockReq)]) -> IO ()

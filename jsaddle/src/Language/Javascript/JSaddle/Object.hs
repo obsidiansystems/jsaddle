@@ -145,7 +145,7 @@ import Control.Lens (IndexPreservingGetter, to)
 -- >>> testJSaddle $ return ()
 -- ...
 
--- | Object can be made by evaluating a fnction in 'JSM' as long
+-- | Object can be made by evaluating a function in 'JSM' as long
 --   as it returns something we can make into a Object.
 instance MakeObject v => MakeObject (JSM v) where
     makeObject v = v >>= makeObject
@@ -180,7 +180,7 @@ this !! index = do
 
 -- | Makes a getter for a particular property name.
 --
--- > js name = to (!name)
+-- > js name = to (! name)
 --
 -- >>> testJSaddle $ eval "'Hello World'.length"
 -- 11
@@ -189,7 +189,7 @@ this !! index = do
 js :: (MakeObject s, ToJSString name)
    => name          -- ^ Name of the property to find
    -> IndexPreservingGetter s (JSM JSVal)
-js name = to (!name)
+js name = to (! name)
 
 -- | Makes a setter for a particular property name.
 --
@@ -444,7 +444,7 @@ foreign import javascript unsafe "$r = function () { $1(this, arguments); }"
     makeFunctionWithCallback :: Callback (JSVal -> JSVal -> IO ()) -> IO Object
 #endif
 
--- ^ Make a JavaScript function object that wraps a Haskell function.
+-- | Make a JavaScript function object that wraps a Haskell function.
 -- Calls made to the function will be synchronous where possible
 -- (on GHCJS it uses on `syncCallback2` with `ContinueAsync`).
 function :: JSCallAsFunction -- ^ Haskell function to call
@@ -462,8 +462,8 @@ function f = do
     return $ Function cb $ Object f'
 #endif
 
--- ^ Make a JavaScript function object that wraps a Haskell function.
--- Calls made to the function will be Asynchronous.
+-- | Make a JavaScript function object that wraps a Haskell function.
+-- Calls made to the function will be asynchronous.
 asyncFunction :: JSCallAsFunction -- ^ Haskell function to call
               -> JSM Function     -- ^ Returns a JavaScript function object that will
                                   --   call the Haskell one when it is called
