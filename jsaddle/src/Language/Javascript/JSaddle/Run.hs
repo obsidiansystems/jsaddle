@@ -231,8 +231,6 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
   nextTryId <- newTVarIO $ TryId 1
   tries <- newTVarIO M.empty
   pendingResults <- newTVarIO M.empty
-  yieldAccumVar <- newMVar (False, []) -- Accumulates results that need to be yielded
-  yieldReadyVar <- newEmptyMVar -- Filled when there is at least one item in yieldAccumVar
   -- Each value in the map corresponds to a value ready to be returned from the sync frame corresponding to its key
   -- INVARIANT: \(depth, readyFrames) -> all (< depth) $ M.keys readyFrames
   syncCallbackState <- newMVar (0, M.empty, M.empty)
@@ -240,15 +238,7 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
   nextSyncReqId <- newTVarIO $ SyncReqId 1
   syncReqs <- newTVarIO mempty
   threadId <- myThreadId
-  let enqueueSyncBlockRequest depth req = do
-        doPutMVar <- modifyMVar yieldAccumVar $ \(resultReady, old) -> do
-          let !new = (depth, SyncBlockReq_Req req) : old
-          return ((resultReady, new), null old && not resultReady)
-        log $ "enqueueSyncBlockRequest: depth " <> tshow depth <> ", doPutMVar " <> tshow doPutMVar
-        when doPutMVar $ do
-          log $ "enqueueSyncBlockRequest: putting yieldReadyVar"
-          putMVar yieldReadyVar ()
-          log $ "enqueueSyncBlockRequest: done putting yieldReadyVar"
+  let {-
       tryEnterSyncFrame :: (Int -> MVar TryId -> IO CallbackResult) -> IO [(Int, SyncBlockReq)]
       tryEnterSyncFrame startNewFrame = modifyMVar syncCallbackState $ \(oldDepth, readyFrames, oldFrameTries) -> modifyMVar yieldAccumVar $ \(resultReady, old) -> do
         let
@@ -323,6 +313,7 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
             (allResults, (newDepth, newReadyFrames)) = yieldAllReady (oldDepth, oldReadyFrames)
         requests <- reverse . snd <$> swapMVar yieldAccumVar (False, [])
         pure $ ((newDepth, newReadyFrames, oldFrameTries), allResults ++ requests)
+-}
       processRsp = traverse_ $ \case
         Rsp_GetJson getJsonReqId val -> do
           reqs <- atomically $ do
@@ -392,32 +383,36 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
         , _jsContextRef_waitForResults = Nothing
         }
       processSyncCommand = \case
-        SyncCommand_StartCallback acked callbackId this args -> do
+        SyncCommand_StartCallback acked (JSThreadId jsThreadId) callbackId this args -> do --TODO: Leave JSThreadId packed
           mCallback <- fmap (M.lookup callbackId) $ atomically $ readTVar callbacks
           case mCallback of
             Just (callback :: JSVal -> [JSVal] -> JSM JSVal) -> do
               log $ "processSyncCommand: Found callback " <> tshow callbackId
-              reqs <- tryEnterSyncFrame $ \myDepth tryIdMVar -> do
-                threadId <- myThreadId
-                syncStateLocal <- newMVar SyncState_InSync
-                let syncEnv = env { _jsContextRef_sendReq = \req -> do
-                                      -- We MUST fully evaluate our req here, because if we enqueue it while it is not fully evaluated, it could have thunks inside that block on lazy JSVals.  Since we batch requests, the JSVals it's blocked on might be part of the same batch.  This will result in a lockup, since we won't be able to send the batch until we receive responses which can't be sent until after the batch has been sent.
-                                      evaluate $ rnf req
-                                      log $ "syncEnv sendReq: " <> tshow req
-                                      enqueueSyncBlockRequest myDepth req
-                                  , _jsContextRef_syncThreadId = Just threadId
-                                  , _jsContextRef_myThreadId = threadId
-                                  , _jsContextRef_syncState = syncStateLocal }
-                    run = do
-                      JSM $ asks _jsContextRef_myTryId >>= liftIO . putMVar tryIdMVar
-                      (Right <$>) $ join $ callback <$> wrapJSVal this <*> traverse wrapJSVal args
-                log $ "processSyncCommand: Running callback " <> tshow callbackId
-                try $ flip runReaderT syncEnv $ unJSM $
-                  run `catchError` (\e -> do
-                    exceptionStr <- T.unpack <$> valToText (unJavaScriptException e)
-                    unsafeInlineLiftIO $ putStrLn ("JavaScriptException happened in sync callback : " <> exceptionStr) >> pure (Left e))
+              threadId <- myThreadId
+              syncStateLocal <- newMVar SyncState_InSync
+              let syncEnv = env { _jsContextRef_sendReq = \req -> do
+                                    -- We MUST fully evaluate our req here, because if we enqueue it while it is not fully evaluated, it could have thunks inside that block on lazy JSVals.  Since we batch requests, the JSVals it's blocked on might be part of the same batch.  This will result in a lockup, since we won't be able to send the batch until we receive responses which can't be sent until after the batch has been sent.
+                                    evaluate $ rnf req
+                                    log $ "syncEnv sendReq: " <> tshow req
+                                    enqueueReq (jsThreadId, SyncBlockReq_Req req)
+                                , _jsContextRef_syncThreadId = Just threadId
+                                , _jsContextRef_myThreadId = threadId
+                                , _jsContextRef_syncState = syncStateLocal }
+                  run = do
+                    (Right <$>) $ join $ callback <$> wrapJSVal this <*> traverse wrapJSVal args
+              log $ "processSyncCommand: Running callback " <> tshow callbackId
               ackReqs acked
-              startSync --TODO: If this is empty, we ought to dequeueAllPendingReqs; however, if we did that, we would need to communicate that fact, so that the JS side knows it doesn't need to ignore any async Reqs
+              result <- startSync --TODO: If this is empty, we ought to dequeueAllPendingReqs; however, if we did that, we would need to communicate that fact, so that the JS side knows it doesn't need to ignore any async Reqs
+              forkIO $ flip runReaderT syncEnv $ unJSM $ do
+                result <- run `catchError` (\e -> do
+                  exceptionStr <- T.unpack <$> valToText (unJavaScriptException e)
+                  unsafeInlineLiftIO $ putStrLn ("JavaScriptException happened in sync callback : " <> exceptionStr) >> pure (Left e))
+                case result of
+                  Left e ->
+                    JSM $ liftIO $ enqueueReq (jsThreadId, SyncBlockReq_Throw $ Left $ tshow e) --TODO: Pass exception properly
+                  Right r -> withJSValId r $ \rId ->
+                    JSM $ liftIO $ enqueueReq (jsThreadId, SyncBlockReq_Result rId)
+              pure result
             Nothing -> error $ "sync callback " <> show callbackId <> " called, but does not exist"
         SyncCommand_Continue -> dequeueAllPendingReqs
   arg <- flip runJSMCheap env $ do --Note: This must be runJSMCheap, because we cannot wait for a sync here

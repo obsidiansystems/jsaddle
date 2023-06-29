@@ -91,6 +91,7 @@ module Language.Javascript.JSaddle.Types (
   , GetJsonReqId (..)
   , SyncReqId (..)
   , TryId (..)
+  , JSThreadId (..)
   , PrimVal (..)
   , TryReq (..)
   , SyncState (..)
@@ -196,6 +197,9 @@ import GHC.Exts (Constraint)
 #ifdef ghcjs_HOST_OS
 type JSContextRef = ()
 #else
+newtype JSThreadId = JSThreadId Int
+  deriving (Show, Read, Eq, Ord, ToJSON, FromJSON)
+
 data JSContextRef = JSContextRef
   { _jsContextRef_sendReq :: !(TryReq -> IO ())
   , _jsContextRef_notifyBlocking :: !(IO ())
@@ -555,7 +559,7 @@ instance FromJSON Rsp where
   parseJSON = A.genericParseJSON $ aesonOptions "Rsp"
 
 data SyncCommand
-   = SyncCommand_StartCallback Int CallbackId ValId [ValId]
+   = SyncCommand_StartCallback Int JSThreadId CallbackId ValId [ValId]
    -- ^ Int indicates the total number of async Reqs that have been processed since starting the channel, INCLUDING whichever Req triggered this StartCallback, if it was asynchronous.  Any Reqs received synchronously are not included.  Reqs that have been ignored are NOT included.
    -- The input valIds here must always be allocated on the JS side
    -- TODO: Make sure throwing stuff works when it ends up skipping over our own call stack entries
@@ -571,7 +575,7 @@ instance FromJSON SyncCommand where
 data SyncBlockReq
   = SyncBlockReq_Req TryReq
   | SyncBlockReq_Result ValId
-  | SyncBlockReq_Throw Int (Either Text ValId) -- ^ Int is the frame depth which should receive throw
+  | SyncBlockReq_Throw (Either Text ValId) -- ^ Int is the frame depth which should receive throw
    deriving (Generic, Show)
 
 instance ToJSON SyncBlockReq where
