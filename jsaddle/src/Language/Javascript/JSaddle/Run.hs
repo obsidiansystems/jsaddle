@@ -72,11 +72,6 @@ import qualified Data.Set as Set
 import Data.IntMap (IntMap)
 import qualified Data.IntMap as IntMap
 
-import GHC.Exts.Heap.Closures
-import GHC.Exts.Heap
-import GHC.HeapView
-import System.Mem
-
 import Language.Javascript.JSaddle.Types
 import Language.Javascript.JSaddle.Value (valToText)
 --TODO: Handle JS exceptions
@@ -184,7 +179,7 @@ requestManager tuningParams sendReqBatchAsync = do
           reqsToResend <- readTVar asyncSentReqs
           writeTVar asyncSentReqs mempty
           pure (oldMode, reqsToResend)
-        when (oldMode == RequestMode_Sync) $ putStrLn $ "warning: requestManager: entered sync mode when we were already in sync mode"
+        -- when (oldMode == RequestMode_Sync) $ putStrLn $ "warning: requestManager: entered sync mode when we were already in sync mode" --TODO: This is OK, and currently happens a lot.  We should probably say something about why this is OK
         pure $ toList reqsToResend
       endSync = do
         oldMode <- atomically $ do
@@ -215,14 +210,14 @@ runJavaScriptInt
         , JSVal
         )
 runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
+  {-
   logQueue <- newChan
   forkIO $ forever $ do
     logLine <- readChan logQueue
     T.putStrLn logLine
   let log = writeChan logQueue
-  {-}
+  -}
   let log _ = pure ()
-  --}
   let sendAsyncReqsBatch b = do
         let b' = b <&> \case
               (_, SyncBlockReq_Req r@(TryReq _ (Req_FreeRef _))) -> r --TODO: Change these so they don't get the threadid wrong in the first place
@@ -247,83 +242,7 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
   nextSyncReqId <- newTVarIO $ SyncReqId 1
   syncReqs <- newTVarIO mempty
   threadId <- myThreadId
-  let {-
-      tryEnterSyncFrame :: (Int -> MVar TryId -> IO CallbackResult) -> IO [(Int, SyncBlockReq)]
-      tryEnterSyncFrame startNewFrame = modifyMVar syncCallbackState $ \(oldDepth, readyFrames, oldFrameTries) -> modifyMVar yieldAccumVar $ \(resultReady, old) -> do
-        let
-          isThrow req = case req of
-            SyncBlockReq_Throw _ _ -> True
-            _ -> False
-          -- If we have a throw on a lower frame, then the new frame should not be started
-          -- Need to do throw immediately on the new frame
-          startingNewFrame = not $ any isThrow $ M.elems readyFrames
-          !newResultReady = if startingNewFrame then False else resultReady
-          -- these are sent immediately
-          new
-            | not startingNewFrame =
-              (succ oldDepth, SyncBlockReq_Throw (succ oldDepth) (Left "AsyncCancelled: Lower frame has exception")) : (reverse old)
-            | otherwise = reverse old
-          !newDepth = if startingNewFrame then succ oldDepth else oldDepth
-        newFrameTries <- if startingNewFrame
-          then do
-            tryMVar <- newEmptyMVar
-            void $ forkIO $ (exitSyncFrame newDepth =<< startNewFrame newDepth tryMVar)
-            (\t -> M.insertWith (error "frame's tryId already present") newDepth t oldFrameTries)
-              <$> takeMVar tryMVar
-          else pure oldFrameTries
-        unless (newResultReady || (null old && not resultReady)) $ do
-          log $ "tryEnterSyncFrame: taking yieldReadyVar"
-          takeMVar yieldReadyVar
-        return ((newResultReady, []), ((newDepth, readyFrames, newFrameTries), new))
-      exitSyncFrame :: Int -> CallbackResult -> IO ()
-      exitSyncFrame myDepth myRetVal = modifyMVar_ syncCallbackState $ \(oldDepth, oldReadyFrames, oldFrameTries) -> case oldDepth `compare` myDepth of
-        LT -> error "should be impossible: trying to return from deeper sync frame than the current depth"
-        -- Just store our value so it can be yielded later
-        _ -> do
-          !syncBlockReq <- case myRetVal of
-            Left e -> pure $ SyncBlockReq_Throw myDepth (Left $ T.pack $ show e)
-            -- Even though the valId is escaping, this is safe because we know that our yielded value will
-            -- go out before any potential FreeVal request could go out
-            -- The FreeVal request using this 'env' will be done async after all sync frames.
-            Right v -> flip runReaderT env $ unJSM $ withJSValId (either unJavaScriptException id v) $ \retValId -> do
-              pure $ case v of
-                Left _ -> SyncBlockReq_Throw myDepth (Right retValId)
-                Right _ -> SyncBlockReq_Result retValId
-          let !newReadyFrames = M.insertWith (error "should be impossible: trying to return from a sync frame that has already returned") myDepth syncBlockReq oldReadyFrames
-          !newFrameTries <- case myRetVal of
-            Right _ -> pure (M.delete myDepth oldFrameTries)
-            Left _ -> do
-              let
-                (!newFrameTries, toStop) = M.split myDepth oldFrameTries
-                stopTry tryId = do
-                  mTryMVar <- atomically $ do
-                    currentTries <- readTVar tries
-                    writeTVar tries $! M.delete tryId currentTries
-                    return $ M.lookup tryId currentTries
-                  forM_ mTryMVar $ \v ->
-                    putMVar v $ Left $ primToJSVal $ PrimVal_String "Parent Try received an exception."
-              mapM_ stopTry (M.elems toStop)
-              pure newFrameTries
-          when (myDepth == oldDepth) $ modifyMVar_ yieldAccumVar $ \(resultReady, old) -> do
-            when ((null old) && (not resultReady)) $ do
-              log $ "exitSyncFrame: putting yieldReadyVar"
-              putMVar yieldReadyVar ()
-            return (True, old)
-          return (oldDepth, newReadyFrames, newFrameTries)
-
-      yield = modifyMVar syncCallbackState $ \(oldDepth, oldReadyFrames, oldFrameTries) -> do
-        let yieldAllReady :: (Int, Map Int SyncBlockReq)
-              -> ([(Int, SyncBlockReq)], (Int, Map Int SyncBlockReq))
-            yieldAllReady (depth, readyFrames) = case M.lookup depth readyFrames of
-              Nothing -> ([], (depth, readyFrames))
-              Just v -> ((depth,v):vs, remaining)
-                where
-                  (vs, remaining) = yieldAllReady (pred depth, M.delete depth readyFrames)
-            (allResults, (newDepth, newReadyFrames)) = yieldAllReady (oldDepth, oldReadyFrames)
-        requests <- reverse . snd <$> swapMVar yieldAccumVar (False, [])
-        pure $ ((newDepth, newReadyFrames, oldFrameTries), allResults ++ requests)
--}
-      processRsp = traverse_ $ \case
+  let processRsp = traverse_ $ \case
         Rsp_GetJson getJsonReqId val -> do
           reqs <- atomically $ do
             reqs <- readTVar getJsonReqs
@@ -418,8 +337,8 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
                   exceptionStr <- T.unpack <$> valToText (unJavaScriptException e)
                   unsafeInlineLiftIO $ putStrLn ("JavaScriptException happened in sync callback : " <> exceptionStr) >> pure (Left e))
                 case result of
-                  Left e ->
-                    JSM $ liftIO $ enqueueReq (jsThreadId, SyncBlockReq_Throw $ Left $ tshow e) --TODO: Pass exception properly
+                  Left (JavaScriptException e) -> withJSValId e $ \eId ->
+                    JSM $ liftIO $ enqueueReq (jsThreadId, SyncBlockReq_Throw eId) --TODO: Pass exception properly
                   Right r -> withJSValId r $ \rId ->
                     JSM $ liftIO $ enqueueReq (jsThreadId, SyncBlockReq_Result rId)
               pure result
@@ -428,40 +347,6 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
   arg <- flip runJSMCheap env $ do --Note: This must be runJSMCheap, because we cannot wait for a sync here
     argRef <- wrapRef $ RefId (-1)
     JSVal <$> lazyValResult argRef
-  forkIO $ replicateM_ 20 $ do
-    threadDelay 5000000
-    performGC
-    log . tshow . M.keys =<< atomically (readTVar callbacks)
-    boxes <- sequence
-      [ fmap (\a -> (Set.singleton "getJsonReqs", asBox a)) $ atomically $ readTVar getJsonReqs
-      , fmap (\a -> (Set.singleton "nextCallbackId", asBox a)) $ atomically $ readTVar nextCallbackId
-      , fmap (\a -> (Set.singleton "callbacks", asBox a)) $ atomically $ readTVar callbacks
-      , fmap (\a -> (Set.singleton "nextTryId", asBox a)) $ atomically $ readTVar nextTryId
-      , fmap (\a -> (Set.singleton "tries", asBox a)) $ atomically $ readTVar tries
-      , fmap (\a -> (Set.singleton "pendingResults", asBox a)) $ atomically $ readTVar pendingResults
-      , fmap (\a -> (Set.singleton "syncCallbackState", asBox a)) $ tryReadMVar syncCallbackState
-      ]
-    let propagateReachability :: Monoid a => IntMap (HeapGraphEntry a) -> IntMap (HeapGraphEntry a)
-        propagateReachability orig = IntMap.mapWithKey (\k v -> v { hgeData = IntMap.findWithDefault (error "propagateReachability: invalid index") k values }) orig
-          where backLinks = IntMap.fromListWith (<>) $ do
-                  (k, v) <- IntMap.toList orig
-                  childK <- catMaybes $ toList $ hgeClosure v
-                  pure (childK, Set.singleton k)
-                values = flip IntMap.mapWithKey orig $ \myIndex _ ->
-                  let parents = IntMap.findWithDefault mempty myIndex backLinks
-                  in mconcat
-                     [ hgeData $ IntMap.findWithDefault (error "propagateReachability: invalid index") myIndex orig
-                     , mconcat $ toList parents <&> \parent ->
-                         IntMap.findWithDefault (error "propagateReachability: invalid index") parent values
-                     ]
-    log "Starting to get heap graph"
-    (g@(HeapGraph m), _) <- multiBuildHeapGraph 8 boxes
-    forM_ (toList $ propagateReachability m) $ \case
-      h@(HeapGraphEntry { hgeClosure = c@(MutVarClosure _ _) }) -> do
-        log $ tshow h
-        log . tshow =<< buildHeapGraph 5 () (hgeBox h)
-      _ -> pure ()
-    log $ "Heap graph has " <> tshow (length m) <> " items"
   return
     ( \rsp -> do
         log $ "processRsp: " <> tshow rsp

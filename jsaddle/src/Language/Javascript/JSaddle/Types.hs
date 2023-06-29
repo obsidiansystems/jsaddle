@@ -576,7 +576,7 @@ instance FromJSON SyncCommand where
 data SyncBlockReq
   = SyncBlockReq_Req TryReq
   | SyncBlockReq_Result ValId
-  | SyncBlockReq_Throw (Either Text ValId) -- ^ Int is the frame depth which should receive throw
+  | SyncBlockReq_Throw ValId
    deriving (Generic, Show)
 
 instance ToJSON SyncBlockReq where
@@ -730,11 +730,9 @@ newRef = do
 wrapRef :: RefId -> JSM Ref
 wrapRef valId = JSM $ do
   valRef <- liftIO $ newIORef valId
-  liftIO $ putStrLn $ "wrapRef " <> show valId
   -- Bind this strictly to avoid retaining the whole JSContextRef in the finalizer
   !sendReq' <- asks _jsContextRef_sendReq
   void $ liftIO $ mkWeakIORef valRef $ do
-    liftIO $ putStrLn $ "FreeRef " <> show valId
     --TODO: This needs to NOT inherit the caller's JSThreadId, because it will usually execute after that thread has terminated, which will confuse things
     sendReq' $ TryReq
       { _tryReq_tryId = TryId 0 --TODO: This probably shouldn't even be a TryReq
