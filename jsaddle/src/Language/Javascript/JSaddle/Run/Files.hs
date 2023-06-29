@@ -108,6 +108,10 @@ jsaddleCoreJs = "\
     \\n\
     \    }\n\
     \\n\
+    \    this.peekAll = function() {\n\
+    \      return queue.slice(offset);\n\
+    \    }\n\
+    \\n\
     \    /* Returns the item at the front of the queue (without dequeuing it). If the\n\
     \     * queue is empty then undefined is returned.\n\
     \     */\n\
@@ -125,6 +129,7 @@ jsaddleCoreJs = "\
     \    if (responses.length > 0) {\n\
     \      var responses_ = responses;\n\
     \      responses = [];\n\
+    \      window.jsaddleInternals.responses = responses;\n\
     \      sendRsp(responses_);\n\
     \    }\n\
     \  };\n\
@@ -204,6 +209,9 @@ jsaddleCoreJs = "\
     \  result(-1, arg);\n\
     \  var nextValId = -2;\n\
     \  var syncRequests = new Queue();\n\
+    \  // `threads` contains a Queue for any thread that is blocked\n\
+    \  var threads = new Map();\n\
+    \  var nextThreadId = 2;\n\
     \  var getNextSyncRequest = function() {\n\
     \    if(syncRequests.isEmpty()) {\n\
     \      // Make sure all pending responses are sent\n\
@@ -215,7 +223,22 @@ jsaddleCoreJs = "\
     \    }\n\
     \    return syncRequests.dequeue();\n\
     \  };\n\
+    \  var getRunnableSyncRequest = function() {\n\
+    \    while(true) {\n\
+    \      var tuple = getNextSyncRequest();\n\
+    \      var reqThread = tuple[0];\n\
+    \      var syncReq = tuple[1];\n\
+    \      if(threads.has(reqThread)) {\n\
+    \        threads.get(reqThread).enqueue(tuple); // Thread blocked; enqueue to run when the thread becomes unblocked\n\
+    \      } else {\n\
+    \        return syncReq; // Regular runnable thread\n\
+    \      }\n\
+    \    }\n\
+    \  }\n\
     \  var syncDepth = 0;\n\
+    \  var processedAsyncReqs = 0;\n\
+    \  var asyncReqsToIgnore = 0;\n\
+    \  var asyncReqs = new Queue();\n\
     \  var processAllEnqueuedReqs = function() {\n\
     \    while(!syncRequests.isEmpty()) {\n\
     \      var tuple = syncRequests.dequeue();\n\
@@ -223,85 +246,110 @@ jsaddleCoreJs = "\
     \      if(syncReq.tag !== 'Req') {\n\
     \        throw \"processAllEnqueuedReqs: syncReq is not SyncBlockReq_Req; this should never happen because Result/Throw should only be sent while a synchronous request is still in progress\";\n\
     \      }\n\
-    \      if (tuple[0] > syncDepth) {\n\
-    \        throw \"processAllEnqueuedReqs: queue contains a request for a frame which has exited\";\n\
+    \      processSingleReq(1, syncReq.contents);\n\
+    \    }\n\
+    \    while(!asyncReqs.isEmpty()) {\n\
+    \      var req = asyncReqs.dequeue();\n\
+    \      if(asyncReqsToIgnore > 0) {\n\
+    \        asyncReqsToIgnore--;\n\
+    \        window.jsaddleInternals.asyncReqsToIgnore = asyncReqsToIgnore;\n\
+    \      } else {\n\
+    \        processedAsyncReqs++;\n\
+    \        window.jsaddleInternals.processedAsyncReqs = processedAsyncReqs;\n\
+    \        processSingleReq(1, req);\n\
     \      }\n\
-    \      processSingleReq(syncReq.contents);\n\
     \    }\n\
     \  };\n\
-    \  var runSyncCallback = function(callback, that, args) {\n\
+    \  var decreaseDepth = function() {\n\
+    \    syncDepth--;\n\
+    \    window.jsaddleInternals.syncDepth = syncDepth;\n\
+    \    if(syncDepth === 0) {\n\
+    \      // Ensure that all remaining requests are cleared out in a timely\n\
+    \      // fashion.  Any incoming websocket requests will also run\n\
+    \      // processAllEnqueuedReqs, but it could potentially be an unlimited\n\
+    \      // amount of time before the next websocket request comes in.  We\n\
+    \      // can't process this synchronously because we need to return right\n\
+    \      // now - it's possible the next item in the queue will make use of\n\
+    \      // something we were supposed to produce, so if we run that without\n\
+    \      // returning first, it won't be available\n\
+    \      sendRspImmediate({\n\
+    \        'tag': 'AsyncMode',\n\
+    \        'contents': []\n\
+    \      });\n\
+    \      setTimeout(processAllEnqueuedReqs, 0);\n\
+    \    }\n\
+    \  };\n\
+    \  var increaseDepth = function() {\n\
+    \    syncDepth++;\n\
+    \    window.jsaddleInternals.syncDepth = syncDepth;\n\
+    \  };\n\
+    \  var runSyncCallback = function(callback, callbackObj, that, args) {\n\
     \    // Make sure all pending responses are sent\n\
     \    doSendRsp();\n\
-    \    syncDepth++;\n\
+    \    increaseDepth();\n\
+    \    var threadId = nextThreadId++;\n\
     \    var newReqs = processSyncCommand({\n\
     \      'tag': 'StartCallback',\n\
     \      'contents': [\n\
-    \        syncRequests.isEmpty(),\n\
+    \        processedAsyncReqs,\n\
+    \        threadId,\n\
     \        callback,\n\
+    \        callbackObj,\n\
     \        that,\n\
     \        args\n\
     \      ]\n\
     \    });\n\
-    \    if (newReqs.length > 0) {\n\
-    \      if ((newReqs[0][1].tag === 'Throw') && (newReqs[0][0] === syncDepth)) {\n\
-    \        // If we receive the first request as Throw, it means that StartCallback did not happen\n\
-    \        // So throw immediately\n\
-    \        var tuple = newReqs.shift();\n\
-    \        syncRequests.enqueueArray(newReqs);\n\
-    \        syncDepth--;\n\
-    \        throw tuple[1].contents[1];\n\
-    \      } else {\n\
-    \        syncRequests.enqueueArray(newReqs);\n\
-    \      }\n\
-    \    }\n\
+    \    asyncReqsToIgnore = newReqs;\n\
+    \    window.jsaddleInternals.asyncReqsToIgnore = asyncReqsToIgnore.length;\n\
+    \    syncRequests.enqueueArray(newReqs);\n\
     \    while(true) {\n\
-    \      var tuple = getNextSyncRequest();\n\
-    \      var syncReq = tuple[1];\n\
+    \      var syncReq = getRunnableSyncRequest();\n\
     \      switch (syncReq.tag) {\n\
     \      case 'Req':\n\
-    \        processSingleReq(syncReq.contents);\n\
+    \        processSingleReq(threadId, syncReq.contents);\n\
     \        break;\n\
     \      case 'Result':\n\
-    \        syncDepth--;\n\
-    \        if(syncDepth === 0 && !syncRequests.isEmpty()) {\n\
-    \          // Ensure that all remaining sync requests are cleared out in a timely\n\
-    \          // fashion.  Any incoming websocket requests will also run\n\
-    \          // processAllEnqueuedReqs, but it could potentially be an unlimited\n\
-    \          // amount of time before the next websocket request comes in.  We\n\
-    \          // can't process this synchronously because we need to return right\n\
-    \          // now - it's possible the next item in the queue will make use of\n\
-    \          // something we were supposed to produce, so if we run that without\n\
-    \          // returning first, it won't be available\n\
-    \          setTimeout(processAllEnqueuedReqs, 0);\n\
-    \        }\n\
+    \        decreaseDepth();\n\
     \        return unwrapVal(syncReq.contents);\n\
     \      case 'Throw':\n\
-    \        // Ensure we are throwing at the right depth\n\
-    \        if (syncDepth !== syncReq.contents[0]) {\n\
-    \          console.error(\"Received throw for wrong syncDepth: \", syncDepth, syncReq.contents[0]);\n\
-    \          continue;\n\
-    \        };\n\
-    \        var validReqs = [];\n\
-    \        while (!syncRequests.isEmpty()) {\n\
-    \          var tuple = syncRequests.dequeue();\n\
-    \          if (tuple[0] !== syncDepth) {\n\
-    \            validReqs.push(tuple);\n\
-    \          }\n\
-    \        }\n\
-    \        syncRequests.enqueueArray(validReqs);\n\
-    \        syncDepth--;\n\
-    \        if (syncReq.contents[1].Left) {\n\
-    \          throw syncReq.contents[1].Left;\n\
-    \        } else {\n\
-    \          throw unwrapVal(syncReq.contents[1].Right);\n\
-    \        }\n\
+    \        decreaseDepth();\n\
+    \        throw unwrapVal(syncReq.contents);\n\
     \      default:\n\
     \        throw 'runSyncCallback: unknown request tag ' + JSON.stringify(syncReq.tag);\n\
     \      }\n\
     \    }\n\
     \  };\n\
+    \  var callbackRegistry = new FinalizationRegistry(function(callbackId) {\n\
+    \    appendRsp({\n\
+    \      'tag': 'FreeCallback',\n\
+    \      'contents': callbackId\n\
+    \    });\n\
+    \  });\n\
+    \  var newSyncCallback = function(callbackId) {\n\
+    \    var callback = function() {\n\
+    \      return runSyncCallback(callbackId, wrapVal(callback), wrapVal(this), Array.prototype.slice.call(arguments).map(wrapVal));\n\
+    \    };\n\
+    \    callback.displayName = 'callback' + callbackId;\n\
+    \    callbackRegistry.register(callback, callbackId);\n\
+    \    return callback;\n\
+    \  };\n\
+    \  var newAsyncCallback = function(callbackId) {\n\
+    \    var callback = function() {\n\
+    \      appendRsp({\n\
+    \        'tag': 'CallAsync',\n\
+    \        'contents': [\n\
+    \          callbackId,\n\
+    \          wrapVal(callback),\n\
+    \          wrapVal(this),\n\
+    \          Array.prototype.slice.call(arguments).map(wrapVal)\n\
+    \        ]\n\
+    \      });\n\
+    \    };\n\
+    \    callbackRegistry.register(callback, callbackId);\n\
+    \    return callback;\n\
+    \  };\n\
     \  var deadTries = new Map();\n\
-    \  var processSingleReq = function(tryReq) {\n\
+    \  var processSingleReq = function(threadId, tryReq) {\n\
     \    // Ignore requests in dead tries\n\
     \    if(deadTries.has(tryReq.tryId)) {\n\
     \      if(tryReq.req.tag === 'FinishTry') {\n\
@@ -316,7 +364,7 @@ jsaddleCoreJs = "\
     \      var req = tryReq.req;\n\
     \      switch(req.tag) {\n\
     \      case 'FreeRef':\n\
-    \        vals.delete(req.contents[0]);\n\
+    \        vals.delete(req.contents);\n\
     \        break;\n\
     \      case 'NewJson':\n\
     \        result(req.contents[1], req.contents[0]);\n\
@@ -334,22 +382,10 @@ jsaddleCoreJs = "\
     \        runSyncCallback(req.contents[0], [], []);\n\
     \        break;\n\
     \      case 'NewSyncCallback':\n\
-    \        result(req.contents[1], function() {\n\
-    \          return runSyncCallback(req.contents[0], wrapVal(this), Array.prototype.slice.call(arguments).map(wrapVal));\n\
-    \        });\n\
+    \        result(req.contents[1], newSyncCallback(req.contents[0]));\n\
     \        break;\n\
     \      case 'NewAsyncCallback':\n\
-    \        var callbackId = req.contents[0];\n\
-    \        result(req.contents[1], function() {\n\
-    \          appendRsp({\n\
-    \            'tag': 'CallAsync',\n\
-    \            'contents': [\n\
-    \              callbackId,\n\
-    \              wrapVal(this),\n\
-    \              Array.prototype.slice.call(arguments).map(wrapVal)\n\
-    \            ]\n\
-    \          });\n\
-    \        });\n\
+    \        result(req.contents[1], newAsyncCallback(req.contents[0]));\n\
     \        break;\n\
     \      case 'SetProperty':\n\
     \        unwrapVal(req.contents[2])[unwrapVal(req.contents[0])] = unwrapVal(req.contents[1]);\n\
@@ -358,10 +394,16 @@ jsaddleCoreJs = "\
     \        result(req.contents[2], unwrapVal(req.contents[1])[unwrapVal(req.contents[0])]);\n\
     \        break;\n\
     \      case 'CallAsFunction':\n\
+    \        threads.set(threadId, new Queue());\n\
     \        result(req.contents[3], unwrapVal(req.contents[0]).apply(unwrapVal(req.contents[1]), req.contents[2].map(unwrapVal)));\n\
+    \        syncRequests.enqueueArray(threads.get(threadId).peekAll()); //TODO: This will take priority over the async requests but not other sync requests, which might be fine, but doesn't seem very principled\n\
+    \        threads.delete(threadId); //TODO: Exceptions\n\
     \        break;\n\
     \      case 'CallAsConstructor':\n\
+    \        threads.set(threadId, new Queue());\n\
     \        result(req.contents[2], new (Function.prototype.bind.apply(unwrapVal(req.contents[0]), [null].concat(req.contents[1].map(unwrapVal)))));\n\
+    \        syncRequests.enqueueArray(threads.get(threadId).peekAll()); //TODO: This will take priority over the async requests but not other sync requests, which might be fine, but doesn't seem very principled\n\
+    \        threads.delete(threadId); //TODO: Exceptions\n\
     \        break;\n\
     \      case 'FinishTry':\n\
     \        sendRspImmediate({\n\
@@ -395,13 +437,28 @@ jsaddleCoreJs = "\
     \      });\n\
     \    }\n\
     \  };\n\
-    \  var processReq = function(req) {\n\
-    \    processAllEnqueuedReqs();\n\
-    \    processSingleReq(req);\n\
+    \  var processAsyncReq = function(req) {\n\
+    \    asyncReqs.enqueue(req);\n\
+    \    if(syncDepth === 0) {\n\
+    \      // We are processing in async mode\n\
+    \      processAllEnqueuedReqs();\n\
+    \    }\n\
+    \  };\n\
+    \  window.jsaddleInternals = {\n\
+    \    vals: vals,\n\
+    \    responses: responses,\n\
+    \    nextValId: nextValId,\n\
+    \    syncRequests: syncRequests,\n\
+    \    deadTries: deadTries,\n\
+    \    asyncReqs: asyncReqs,\n\
+    \    asyncReqsToIgnore: asyncReqsToIgnore,\n\
+    \    processedAsyncReqs: processedAsyncReqs,\n\
+    \    callbackRegistry: callbackRegistry,\n\
+    \    threads: threads,\n\
     \  };\n\
     \  return {\n\
-    \    processReq: processReq,\n\
-    \    processReqs: function(reqs) { for (var req of reqs) { processReq(req);}}\n\
+    \    processReq: processAsyncReq,\n\
+    \    processReqs: function(reqs) { for (var req of reqs) { processAsyncReq(req);}}\n\
     \  };\n\
     \}\n\
     \"
