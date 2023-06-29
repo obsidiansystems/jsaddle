@@ -198,8 +198,7 @@ type JSContextRef = ()
 #else
 data JSContextRef = JSContextRef
   { _jsContextRef_sendReq :: !(TryReq -> IO ())
-  , _jsContextRef_sendReqAsync :: !(TryReq -> IO ())
-  , _jsContextRef_sendReqsBatchVar :: !(MVar ())
+  , _jsContextRef_notifyBlocking :: !(IO ())
   , _jsContextRef_myThreadId :: !(ThreadId)
   , _jsContextRef_syncThreadId :: Maybe (ThreadId)
   , _jsContextRef_nextRefId :: !(TVar RefId)
@@ -385,8 +384,7 @@ runJSM a ctx = liftIO $ do
         _jsContextRef_syncState = syncStateLocal,
         _jsContextRef_myThreadId = threadId,
         _jsContextRef_syncThreadId = Nothing,
-        _jsContextRef_waitForResults = Nothing,
-        _jsContextRef_sendReq = _jsContextRef_sendReqAsync ctx }
+        _jsContextRef_waitForResults = Nothing }
   result <- flip runReaderT ctx' $ unJSM $ do
     catchError (Right <$> a) (return . Left)  -- <* waitForSync
   either throwIO return result
@@ -401,8 +399,7 @@ runJSMCheap a ctx = liftIO $ do
         _jsContextRef_syncState = syncStateLocal,
         _jsContextRef_myThreadId = threadId,
         _jsContextRef_syncThreadId = Nothing,
-        _jsContextRef_waitForResults = Nothing,
-        _jsContextRef_sendReq = _jsContextRef_sendReqAsync ctx }
+        _jsContextRef_waitForResults = Nothing }
   flip runReaderT ctx' $ unJSM a
 #endif
 
@@ -548,6 +545,7 @@ data Rsp
    --TODO: When an exception is thrown, make sure we stop waiting for any results from them; otherwise, the datastructures waiting for those results will leak
    | Rsp_FinishTry TryId (Either ValId ()) -- Left if an exception was thrown; Right if not
    | Rsp_Sync SyncReqId
+   | Rsp_FreeCallback CallbackId
    deriving (Show, Read, Eq, Generic)
 
 instance ToJSON Rsp where
@@ -557,8 +555,8 @@ instance FromJSON Rsp where
   parseJSON = A.genericParseJSON $ aesonOptions "Rsp"
 
 data SyncCommand
-   = SyncCommand_StartCallback Bool CallbackId ValId [ValId]
-   -- ^ Bool indicates if the request queue is empty when the StartCallback happened
+   = SyncCommand_StartCallback Int CallbackId ValId [ValId]
+   -- ^ Int indicates the total number of async Reqs that have been processed since starting the channel, INCLUDING whichever Req triggered this StartCallback, if it was asynchronous.  Any Reqs received synchronously are not included.  Reqs that have been ignored are NOT included.
    -- The input valIds here must always be allocated on the JS side
    -- TODO: Make sure throwing stuff works when it ends up skipping over our own call stack entries
    | SyncCommand_Continue
@@ -692,7 +690,7 @@ callbackToAsyncFunction callbackId = withJSValOutput_ $ \ref -> do
 lazyValResult :: Ref -> JSM LazyVal
 lazyValResult ref = JSM $ do
   pendingResults <- asks _jsContextRef_pendingResults
-  !sendReqsBatchVar <- asks _jsContextRef_sendReqsBatchVar
+  !notifyBlocking <- asks _jsContextRef_notifyBlocking
   !sendReq' <- asks _jsContextRef_sendReq
   liftIO $ do
     refId <- readIORef $ unRef ref
@@ -708,7 +706,7 @@ lazyValResult ref = JSM $ do
             { _tryReq_tryId = TryId 0 -- not relevant
             , _tryReq_req = Req_TriggerSendRsp
             }
-          void $ tryPutMVar sendReqsBatchVar ()
+          notifyBlocking
           takeMVar resultVar
       writeIORef refRef Nothing
       return result
@@ -726,9 +724,11 @@ newRef = do
 wrapRef :: RefId -> JSM Ref
 wrapRef valId = JSM $ do
   valRef <- liftIO $ newIORef valId
+  liftIO $ putStrLn $ "wrapRef " <> show valId
   -- Bind this strictly to avoid retaining the whole JSContextRef in the finalizer
-  !sendReq' <- asks _jsContextRef_sendReqAsync
+  !sendReq' <- asks _jsContextRef_sendReq
   void $ liftIO $ mkWeakIORef valRef $ do
+    liftIO $ putStrLn $ "FreeRef " <> show valId
     sendReq' $ TryReq
       { _tryReq_tryId = TryId 0 --TODO: This probably shouldn't even be a TryReq
       , _tryReq_req = Req_FreeRef valId
@@ -783,8 +783,8 @@ getJson' val = do
   JSM $ liftIO $ atomically $ modifyTVar' getJsonReqs $ M.insert getJsonReqId resultVar
   sendReq $ Req_GetJson val getJsonReqId
   JSM $ do
-    sendReqsBatchVar <- asks _jsContextRef_sendReqsBatchVar
-    liftIO $ void $ tryPutMVar sendReqsBatchVar ()
+    notifyBlocking <- asks _jsContextRef_notifyBlocking
+    liftIO notifyBlocking
   return $ takeMVar resultVar
 
 withJSValOutput_ :: (Ref -> JSM ()) -> JSM JSVal
@@ -824,7 +824,7 @@ instance MonadError JavaScriptException JSM where
   catchError a h = do
     tryId <- newId _jsContextRef_nextTryId
     tries <- JSM $ asks _jsContextRef_tries
-    sendReqsBatchVar <- JSM $ asks _jsContextRef_sendReqsBatchVar
+    notifyBlocking <- JSM $ asks _jsContextRef_notifyBlocking
     finishVar <- JSM $ liftIO newEmptyMVar
     asyncExceptionVar <- JSM $ liftIO newEmptyMVar
     JSM $ liftIO $ atomically $ modifyTVar' tries $ M.insert tryId finishVar
@@ -847,7 +847,7 @@ instance MonadError JavaScriptException JSM where
                       putMVar asyncExceptionVar e
                       throwIO e)
     tryResult <- JSM $ liftIO $ withAsync action $ \aa -> do
-      void $ tryPutMVar sendReqsBatchVar ()
+      notifyBlocking --TODO: Is this right?
       -- we can miss either async exception or JavaScriptException
       race
         (takeMVar asyncExceptionVar)
@@ -904,7 +904,7 @@ waitForSync = do
   nextSyncReqId <- JSM $ asks _jsContextRef_nextSyncReqId
   sendReq' <- JSM $ asks _jsContextRef_sendReq
   tid <- JSM $ asks _jsContextRef_myTryId
-  sendReqsBatchVar <- JSM $ asks _jsContextRef_sendReqsBatchVar
+  notifyBlocking <- JSM $ asks _jsContextRef_notifyBlocking
   join $ unsafeInlineLiftIO $ modifyMVar syncState $ \old -> case old of
     SyncState_InSync -> return (old, return ())
     SyncState_OutOfSync -> do
@@ -915,7 +915,7 @@ waitForSync = do
         { _tryReq_tryId = tid
         , _tryReq_req = Req_Sync syncReqId
         }
-      void $ tryPutMVar sendReqsBatchVar ()
+      notifyBlocking
       return $ (,) (SyncState_WaitingForSync synced) $
         unsafeInlineLiftIO $ readMVar synced
     SyncState_WaitingForSync synced -> do

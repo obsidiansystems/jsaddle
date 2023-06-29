@@ -216,6 +216,23 @@ jsaddleCoreJs = "\
     \    return syncRequests.dequeue();\n\
     \  };\n\
     \  var syncDepth = 0;\n\
+    \  var processedAsyncReqs = 0;\n\
+    \  var asyncReqsToIgnore = 0;\n\
+    \  var asyncReqs = new Queue();\n\
+    \  var processOutstandingAsyncReqs = function() {\n\
+    \    while(!asyncReqs.isEmpty()) {\n\
+    \      var req = asyncReqs.dequeue();\n\
+    \      if(asyncReqsToIgnore > 0) {\n\
+    \        asyncReqsToIgnore--;\n\
+    \        window.jsaddleInternals.asyncReqsToIgnore = asyncReqsToIgnore;\n\
+    \      } else {\n\
+    \        processedAsyncReqs++;\n\
+    \        window.jsaddleInternals.processedAsyncReqs = processedAsyncReqs;\n\
+    \        processSingleReq(req);\n\
+    \      }\n\
+    \    }\n\
+    \  };\n\
+    \  var syncState = 0;\n\
     \  var processAllEnqueuedReqs = function() {\n\
     \    while(!syncRequests.isEmpty()) {\n\
     \      var tuple = syncRequests.dequeue();\n\
@@ -233,15 +250,20 @@ jsaddleCoreJs = "\
     \    // Make sure all pending responses are sent\n\
     \    doSendRsp();\n\
     \    syncDepth++;\n\
+    \    window.jsaddleInternals.syncDepth = syncDepth;\n\
+    \    syncState = 1;\n\
     \    var newReqs = processSyncCommand({\n\
     \      'tag': 'StartCallback',\n\
     \      'contents': [\n\
-    \        syncRequests.isEmpty(),\n\
+    \        processedAsyncReqs,\n\
     \        callback,\n\
     \        that,\n\
     \        args\n\
     \      ]\n\
     \    });\n\
+    \    asyncReqsToIgnore = newReqs;\n\
+    \    window.jsaddleInternals.asyncReqsToIgnore = asyncReqsToIgnore.length;\n\
+    \    syncState = 2;\n\
     \    if (newReqs.length > 0) {\n\
     \      if ((newReqs[0][1].tag === 'Throw') && (newReqs[0][0] === syncDepth)) {\n\
     \        // If we receive the first request as Throw, it means that StartCallback did not happen\n\
@@ -249,11 +271,14 @@ jsaddleCoreJs = "\
     \        var tuple = newReqs.shift();\n\
     \        syncRequests.enqueueArray(newReqs);\n\
     \        syncDepth--;\n\
+    \        window.jsaddleInternals.syncDepth = syncDepth;\n\
+    \        if(syncDepth === 0) setTimeout(processOutstandingAsyncReqs, 0);\n\
     \        throw tuple[1].contents[1];\n\
     \      } else {\n\
     \        syncRequests.enqueueArray(newReqs);\n\
     \      }\n\
     \    }\n\
+    \    syncState = 3;\n\
     \    while(true) {\n\
     \      var tuple = getNextSyncRequest();\n\
     \      var syncReq = tuple[1];\n\
@@ -263,6 +288,8 @@ jsaddleCoreJs = "\
     \        break;\n\
     \      case 'Result':\n\
     \        syncDepth--;\n\
+    \        window.jsaddleInternals.syncDepth = syncDepth;\n\
+    \        if(syncDepth === 0) setTimeout(processOutstandingAsyncReqs, 0);\n\
     \        if(syncDepth === 0 && !syncRequests.isEmpty()) {\n\
     \          // Ensure that all remaining sync requests are cleared out in a timely\n\
     \          // fashion.  Any incoming websocket requests will also run\n\
@@ -290,6 +317,8 @@ jsaddleCoreJs = "\
     \        }\n\
     \        syncRequests.enqueueArray(validReqs);\n\
     \        syncDepth--;\n\
+    \        window.jsaddleInternals.syncDepth = syncDepth;\n\
+    \        if(syncDepth === 0) setTimeout(processOutstandingAsyncReqs, 0);\n\
     \        if (syncReq.contents[1].Left) {\n\
     \          throw syncReq.contents[1].Left;\n\
     \        } else {\n\
@@ -299,6 +328,35 @@ jsaddleCoreJs = "\
     \        throw 'runSyncCallback: unknown request tag ' + JSON.stringify(syncReq.tag);\n\
     \      }\n\
     \    }\n\
+    \    syncState = 0;\n\
+    \  };\n\
+    \  var callbackRegistry = new FinalizationRegistry(function(callbackId) {\n\
+    \    console.log('FreeCallback ' + callbackId);\n\
+    \    appendRsp({\n\
+    \      'tag': 'FreeCallback',\n\
+    \      'contents': callbackId\n\
+    \    });\n\
+    \  });\n\
+    \  var newSyncCallback = function(callbackId) {\n\
+    \    var callback = function() {\n\
+    \      return runSyncCallback(callbackId, wrapVal(this), Array.prototype.slice.call(arguments).map(wrapVal));\n\
+    \    };\n\
+    \    callbackRegistry.register(callback, callbackId);\n\
+    \    return callback;\n\
+    \  };\n\
+    \  var newAsyncCallback = function(callbackId) {\n\
+    \    var callback = function() {\n\
+    \      appendRsp({\n\
+    \        'tag': 'CallAsync',\n\
+    \        'contents': [\n\
+    \          callbackId,\n\
+    \          wrapVal(this),\n\
+    \          Array.prototype.slice.call(arguments).map(wrapVal)\n\
+    \        ]\n\
+    \      });\n\
+    \    };\n\
+    \    callbackRegistry.register(callback, callbackId);\n\
+    \    return callback;\n\
     \  };\n\
     \  var deadTries = new Map();\n\
     \  var processSingleReq = function(tryReq) {\n\
@@ -316,7 +374,8 @@ jsaddleCoreJs = "\
     \      var req = tryReq.req;\n\
     \      switch(req.tag) {\n\
     \      case 'FreeRef':\n\
-    \        vals.delete(req.contents[0]);\n\
+    \        console.log('FreeRef', req);\n\
+    \        vals.delete(req.contents);\n\
     \        break;\n\
     \      case 'NewJson':\n\
     \        result(req.contents[1], req.contents[0]);\n\
@@ -334,30 +393,24 @@ jsaddleCoreJs = "\
     \        runSyncCallback(req.contents[0], [], []);\n\
     \        break;\n\
     \      case 'NewSyncCallback':\n\
-    \        result(req.contents[1], function() {\n\
-    \          return runSyncCallback(req.contents[0], wrapVal(this), Array.prototype.slice.call(arguments).map(wrapVal));\n\
-    \        });\n\
+    \        result(req.contents[1], newSyncCallback(req.contents[0]));\n\
     \        break;\n\
     \      case 'NewAsyncCallback':\n\
-    \        var callbackId = req.contents[0];\n\
-    \        result(req.contents[1], function() {\n\
-    \          appendRsp({\n\
-    \            'tag': 'CallAsync',\n\
-    \            'contents': [\n\
-    \              callbackId,\n\
-    \              wrapVal(this),\n\
-    \              Array.prototype.slice.call(arguments).map(wrapVal)\n\
-    \            ]\n\
-    \          });\n\
-    \        });\n\
+    \        result(req.contents[1], newAsyncCallback(req.contents[0]));\n\
     \        break;\n\
     \      case 'SetProperty':\n\
+    \        if(typeof unwrapVal(req.contents[0]) === 'undefined' || typeof unwrapVal(req.contents[2]) === 'undefined') {\n\
+    \          console.log('SetProperty', req);\n\
+    \        }\n\
     \        unwrapVal(req.contents[2])[unwrapVal(req.contents[0])] = unwrapVal(req.contents[1]);\n\
     \        break;\n\
     \      case 'GetProperty':\n\
     \        result(req.contents[2], unwrapVal(req.contents[1])[unwrapVal(req.contents[0])]);\n\
     \        break;\n\
     \      case 'CallAsFunction':\n\
+    \        if(typeof unwrapVal(req.contents[0]) === 'undefined') {\n\
+    \          console.log('CallAsFunction', req);\n\
+    \        }\n\
     \        result(req.contents[3], unwrapVal(req.contents[0]).apply(unwrapVal(req.contents[1]), req.contents[2].map(unwrapVal)));\n\
     \        break;\n\
     \      case 'CallAsConstructor':\n\
@@ -395,13 +448,26 @@ jsaddleCoreJs = "\
     \      });\n\
     \    }\n\
     \  };\n\
-    \  var processReq = function(req) {\n\
-    \    processAllEnqueuedReqs();\n\
-    \    processSingleReq(req);\n\
+    \  var processAsyncReq = function(req) {\n\
+    \    asyncReqs.enqueue(req);\n\
+    \    if(syncDepth === 0) {\n\
+    \      // We are processing in async mode\n\
+    \      processOutstandingAsyncReqs();\n\
+    \    }\n\
+    \  };\n\
+    \  window.jsaddleInternals = {\n\
+    \    vals: vals,\n\
+    \    responses: responses,\n\
+    \    nextValId: nextValId,\n\
+    \    syncRequests: syncRequests,\n\
+    \    deadTries: deadTries,\n\
+    \    asyncReqs: asyncReqs,\n\
+    \    asyncReqsToIgnore: asyncReqsToIgnore,\n\
+    \    processedAsyncReqs: processedAsyncReqs,\n\
     \  };\n\
     \  return {\n\
-    \    processReq: processReq,\n\
-    \    processReqs: function(reqs) { for (var req of reqs) { processReq(req);}}\n\
+    \    processReq: processAsyncReq,\n\
+    \    processReqs: function(reqs) { for (var req of reqs) { processAsyncReq(req);}}\n\
     \  };\n\
     \}\n\
     \"

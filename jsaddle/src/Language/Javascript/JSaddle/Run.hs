@@ -7,6 +7,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE TupleSections #-}
+{-# LANGUAGE TypeApplications #-}
 -----------------------------------------------------------------------------
 --
 -- Module      :  Language.Javascript.JSaddle.Run
@@ -48,7 +49,7 @@ import Control.Monad (when, join, void, unless, forever)
 import Control.Monad.Except (catchError)
 import Control.Monad.Trans.Reader (runReaderT, asks)
 import Control.Monad.IO.Class (MonadIO(..))
-import Control.Monad.STM (atomically)
+import Control.Monad.STM (STM, atomically, retry)
 import Control.Concurrent (myThreadId, forkIO, threadDelay, forkOS)
 import Control.Concurrent.Async (race_, race)
 import Control.Concurrent.STM.TVar (writeTVar, readTVar, newTVarIO, modifyTVar', readTVarIO)
@@ -74,6 +75,11 @@ import Language.Javascript.JSaddle.Value (valToText)
 import Data.Foldable (forM_, traverse_, foldl')
 import Language.Javascript.JSaddle.Monad (syncPoint)
 
+import Data.Sequence (Seq, (|>))
+import qualified Data.Sequence as Seq
+import Data.Foldable
+import Data.Functor
+
 -- | The first dynamically-allocated RefId
 initialRefId :: RefId
 initialRefId = RefId 2
@@ -91,36 +97,102 @@ runJavaScript
   -- Tested with jsaddle-benchmark (https://github.com/obsidiansystems/jsaddle-benchmark)
 runJavaScript = runJavaScriptInt (500 {- 0.5 ms -}) 100
 
-jsConnectionManager
-  :: Int
-  -- ^ Timeout for sending async requests in microseconds
-  -> Int
-  -- ^ Max size of async requests batch size
-  -> ([TryReq] -> IO ())
-  -> IO ( TryReq -> IO ()
-        , MVar ()
+data TuningParams = TuningParams
+  { _tuningParams_timeout :: Int -- Maximum microseconds to delay outgoing async requests for batching purposes
+  , _tuningParams_sufficientBatchSize :: Int -- Maximum number of async messages to wait for before sending a batch; note that the batch may end up being bigger, but there will not be any intentional delay after the batch size is reached
+  }
+
+data RequestMode
+   = RequestMode_Async
+   | RequestMode_Sync
+   deriving (Eq, Ord, Show, Read)
+
+batchReqs
+  :: forall req
+  .  TuningParams
+  -> ([req] -> IO ()) -- Send a batch of requests; this must not throw exceptions, or batchReqs will fail
+  -> IO (Seq req -> STM (), IO ())
+batchReqs tuningParams sendReqBatchAsync = do
+  sendImmediately <- newTVarIO False
+  pendingReqs <- newTVarIO (mempty :: Seq req)
+  batchLargeEnough <- newEmptyMVar
+  _ <- forkIO $ forever $ do
+    -- Wait for at least one thing to be pending
+    atomically $ do
+      rs <- readTVar pendingReqs
+      when (Seq.null rs) retry
+    -- Wait for either the timeout to elapse, the batch to get large enough, or an explicit signal to send.  Note that we do not atomically capture batches that have hit the max batch size, so the batch we ultimately send may *exceed* the batch size.
+    let waitForTimeout = threadDelay $ _tuningParams_timeout tuningParams
+        waitForBatchReady = atomically $ do
+          si <- readTVar sendImmediately
+          when (not si) $ do
+            rs <- readTVar pendingReqs
+            when (Seq.length rs < _tuningParams_sufficientBatchSize tuningParams) retry
+    race_ waitForTimeout waitForBatchReady
+    reqsToSend <- atomically $ do
+      toSend <- readTVar pendingReqs
+      writeTVar pendingReqs mempty
+      writeTVar sendImmediately False -- Only applies to the batch in progress when it is set
+      pure toSend
+    sendReqBatchAsync $ toList reqsToSend
+  let enqueueReqs reqs = modifyTVar' pendingReqs (<> reqs)
+  pure (enqueueReqs, atomically $ writeTVar sendImmediately True)
+
+requestManager
+  :: forall req
+  .  TuningParams
+  -> ([req] -> IO ()) -- Send a block of messages asynchronously to the JS side
+  -> IO ( req -> IO () -- Make a request to JS from HS.  Whether this is synchronous or not will be automatically determined.  "Synchronous" in this context means that the JS engine is blocked, so it only makes sense for messages from JS to HS to enter us into the synchronous mode.  If HS to JS messages want to be treated as synchronous, they should request from the JS side and then use an MVar or similar to block waiting for the result.
+        , IO () -- Flush any pending requests
+        , Int -> IO () -- Acknowledge that all reqs up to the given number have been processed; this counts since the beginning of the stream. This is idempotent. --TODO: 32 bits is probably not enough for this, but that's what JS will give us.  We need a better approach.  Note that just sending incremental "we finished processing this many" notifications doesn't work, because when we switch to sync mode we need to know how many to throw away, and we may not have yet received asynchronous acknowledgements.
+        , IO [req] -- Initiate synchronous mode; get all the requests that have been sent asynchronously but not acknowledged; they are retransmitted here, and should be ignored when they are eventually received asynchronously.
+        , IO () -- Terminate synchronous mode
+        , IO [req] -- Wait for at least one request to be ready, the return it.  Must be in synchronous mode.
         )
-jsConnectionManager sendReqsTimeout pendingReqsLimit sendReqsBatch = do
-  sendReqsBatchVar <- newMVar ()
-  pendingReqs <- newTVarIO []
-  pendingReqsCount <- newTVarIO (0 :: Int)
-  let doSendReqs = forever $ do
-        race_ (threadDelay sendReqsTimeout) (takeMVar sendReqsBatchVar)
-        reqs <- atomically $ do
-          writeTVar pendingReqsCount 0
-          reqs <- readTVar pendingReqs
-          writeTVar pendingReqs []
-          pure $ reverse reqs
-        unless (null reqs) $ sendReqsBatch reqs
-      sendReqAsync req = do
-        count <- atomically $ do
-          modifyTVar' pendingReqs ((:) req)
-          c <- readTVar pendingReqsCount
-          writeTVar pendingReqsCount (succ c)
-          pure (succ c)
-        when (count > pendingReqsLimit) $ void $ tryPutMVar sendReqsBatchVar ()
-  void $ forkIO doSendReqs
-  pure (sendReqAsync, sendReqsBatchVar)
+requestManager tuningParams sendReqBatchAsync = do
+  mode <- newTVarIO RequestMode_Async
+  (enqueueAsyncReqs, sendImmediately) <- batchReqs tuningParams sendReqBatchAsync
+  ackedReqs <- newTVarIO 0
+  asyncSentReqs <- newTVarIO (mempty :: Seq req)
+  pendingSyncReqs <- newTVarIO (mempty :: Seq req)
+  let enqueueReq req = atomically $ do
+        readTVar mode >>= \case
+          RequestMode_Async -> do
+            enqueueAsyncReqs $ Seq.singleton req
+            modifyTVar' asyncSentReqs (|> req)
+          RequestMode_Sync -> do
+            modifyTVar' pendingSyncReqs (|> req)
+      ackReqs newAcked = atomically $ do
+        oldAcked <- readTVar ackedReqs
+        when (newAcked > oldAcked) $ do
+          writeTVar ackedReqs newAcked
+          old <- readTVar asyncSentReqs
+          let !new = Seq.drop (newAcked - oldAcked) old
+          writeTVar asyncSentReqs new
+      startSync = do
+        (oldMode, reqsToResend) <- atomically $ do
+          oldMode <- readTVar mode
+          writeTVar mode RequestMode_Sync
+          reqsToResend <- readTVar asyncSentReqs
+          writeTVar asyncSentReqs mempty
+          pure (oldMode, reqsToResend)
+        when (oldMode == RequestMode_Sync) $ putStrLn $ "warning: requestManager: entered sync mode when we were already in sync mode"
+        pure $ toList reqsToResend
+      endSync = do
+        oldMode <- atomically $ do
+          oldMode <- readTVar mode
+          writeTVar mode RequestMode_Async
+          reqs <- readTVar pendingSyncReqs
+          writeTVar asyncSentReqs reqs
+          enqueueAsyncReqs reqs
+          pure oldMode
+        when (oldMode == RequestMode_Async) $ putStrLn $ "warning: requestManager: entered async mode when we were already in async mode"
+      dequeueAllPendingReqs = fmap toList $ atomically $ do
+        old <- readTVar pendingSyncReqs
+        if Seq.null old then retry else do
+          writeTVar pendingSyncReqs mempty
+          pure old
+  pure (enqueueReq, sendImmediately, ackReqs, startSync, endSync, dequeueAllPendingReqs)
 
 runJavaScriptInt
   :: Int
@@ -135,7 +207,22 @@ runJavaScriptInt
         , JSVal
         )
 runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
-  (sendReqAsync, sendReqsBatchVar) <- jsConnectionManager sendReqsTimeout pendingReqsLimit sendReqsBatch
+  logQueue <- newChan
+  forkIO $ forever $ do
+    logLine <- readChan logQueue
+    T.putStrLn logLine
+  let log = writeChan logQueue
+  {-}
+  let log _ = pure ()
+  --}
+  let sendAsyncReqsBatch b = do
+        let b' = b <&> \case
+              (0, SyncBlockReq_Req r) -> r
+              sr -> error $ "Trying to send a req async, but it needs to be sent inside a sync block: " <> show sr
+        log ("sendReqsBatch " <> tshow b')
+        sendReqsBatch b'
+  (enqueueReq, sendImmediately, ackReqs, startSync, endSync, dequeueAllPendingReqs) <- requestManager @(Int, SyncBlockReq) (TuningParams sendReqsTimeout pendingReqsLimit) sendAsyncReqsBatch
+  --TODO: Call endSync sometimes
   nextRefId <- newTVarIO initialRefId
   nextGetJsonReqId <- newTVarIO $ GetJsonReqId 1
   getJsonReqs <- newTVarIO M.empty
@@ -153,14 +240,6 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
   nextSyncReqId <- newTVarIO $ SyncReqId 1
   syncReqs <- newTVarIO mempty
   threadId <- myThreadId
-  {-
-  logQueue <- newChan
-  forkIO $ forever $ do
-    logLine <- readChan logQueue
-    T.putStrLn logLine
-  let log = writeChan logQueue
-  -}
-  let log _ = pure ()
   let enqueueSyncBlockRequest depth req = do
         doPutMVar <- modifyMVar yieldAccumVar $ \(resultReady, old) -> do
           let !new = (depth, SyncBlockReq_Req req) : old
@@ -244,22 +323,6 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
             (allResults, (newDepth, newReadyFrames)) = yieldAllReady (oldDepth, oldReadyFrames)
         requests <- reverse . snd <$> swapMVar yieldAccumVar (False, [])
         pure $ ((newDepth, newReadyFrames, oldFrameTries), allResults ++ requests)
-      waitForYield = do
-        log $ "waitForYield: Started"
-        takeMVar yieldReadyVar
-        log $ "waitForYield: Got yieldReadyVar"
-        reqs <- yield
-        log $ "waitForYield: Reqs: " <> tshow reqs
-        let shortCircuitReqs = map (canShortCircuitReq . snd) reqs
-            canShortCircuitReq = \case
-              SyncBlockReq_Req r -> case _tryReq_req r of
-                Req_FinishTry -> Just (Rsp_FinishTry (_tryReq_tryId r) (Right ()))
-                Req_Sync syncReqId -> Just (Rsp_Sync syncReqId)
-                _ -> Nothing
-              _ -> Nothing
-        if all isJust shortCircuitReqs
-          then processRsp (catMaybes shortCircuitReqs) >> waitForYield -- Short circuit all of the requests
-          else pure reqs
       processRsp = traverse_ $ \case
         Rsp_GetJson getJsonReqId val -> do
           reqs <- atomically $ do
@@ -286,6 +349,8 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
                 return ()
               return ()
             Nothing -> error $ "callback " <> show callbackId <> " called, but does not exist"
+        Rsp_FreeCallback callbackId -> do
+          liftIO $ atomically $ modifyTVar' callbacks $ M.delete callbackId
         --TODO: We will need a synchronous version of this anyway, so maybe we should just do it that way
         Rsp_FinishTry tryId tryResult -> do
           mThisTry <- atomically $ do
@@ -308,11 +373,8 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
       env = JSContextRef
         { _jsContextRef_sendReq = \req -> do
             log $ "sendReq: " <> tshow req
-            sendReqAsync req
-        , _jsContextRef_sendReqAsync = \req -> do
-            log $ "sendReqAsync: " <> tshow req
-            sendReqAsync req
-        , _jsContextRef_sendReqsBatchVar = sendReqsBatchVar
+            enqueueReq (0, SyncBlockReq_Req req)
+        , _jsContextRef_notifyBlocking = sendImmediately
         , _jsContextRef_syncThreadId = Nothing
         , _jsContextRef_myThreadId = threadId
         , _jsContextRef_nextRefId = nextRefId
@@ -330,7 +392,7 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
         , _jsContextRef_waitForResults = Nothing
         }
       processSyncCommand = \case
-        SyncCommand_StartCallback reqQueueEmpty callbackId this args -> do
+        SyncCommand_StartCallback acked callbackId this args -> do
           mCallback <- fmap (M.lookup callbackId) $ atomically $ readTVar callbacks
           case mCallback of
             Just (callback :: JSVal -> [JSVal] -> JSM JSVal) -> do
@@ -354,20 +416,19 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
                   run `catchError` (\e -> do
                     exceptionStr <- T.unpack <$> valToText (unJavaScriptException e)
                     unsafeInlineLiftIO $ putStrLn ("JavaScriptException happened in sync callback : " <> exceptionStr) >> pure (Left e))
-              case (reqs, reqQueueEmpty) of
-                ([], True) -> waitForYield -- Wait and send nonEmpty list if queue on JS side is empty
-                _ -> pure reqs
+              ackReqs acked
+              startSync --TODO: If this is empty, we ought to dequeueAllPendingReqs; however, if we did that, we would need to communicate that fact, so that the JS side knows it doesn't need to ignore any async Reqs
             Nothing -> error $ "sync callback " <> show callbackId <> " called, but does not exist"
-        SyncCommand_Continue -> waitForYield
+        SyncCommand_Continue -> dequeueAllPendingReqs
   arg <- flip runJSMCheap env $ do --Note: This must be runJSMCheap, because we cannot wait for a sync here
     argRef <- wrapRef $ RefId (-1)
     JSVal <$> lazyValResult argRef
   return
     ( \rsp -> do
-        log $ "processRsp: " <> show rsp
+        log $ "processRsp: " <> tshow rsp
         processRsp rsp
     , \syncCmd -> do
-        log $ "processSyncCommand: " <> show syncCmd
+        log $ "processSyncCommand: " <> tshow syncCmd
         processSyncCommand syncCmd
     , env
     , arg
