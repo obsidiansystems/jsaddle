@@ -234,7 +234,7 @@ jsaddleCoreJs = "\
     \      } else if(threadInfo === null) {\n\
     \        continue; // Thread in exception state; skip //TODO: Catch\n\
     \      } else {\n\
-    \        threadInfo.enqueue(req); // Thread blocked; enqueue to run when the thread becomes unblocked\n\
+    \        threadInfo.enqueue(tuple); // Thread blocked; enqueue to run when the thread becomes unblocked\n\
     \      }\n\
     \    }\n\
     \  }\n\
@@ -466,6 +466,7 @@ jsaddleCoreJs = "\
     \    asyncReqsToIgnore: asyncReqsToIgnore,\n\
     \    processedAsyncReqs: processedAsyncReqs,\n\
     \    callbackRegistry: callbackRegistry,\n\
+    \    threads: threads,\n\
     \  };\n\
     \  return {\n\
     \    processReq: processAsyncReq,\n\
