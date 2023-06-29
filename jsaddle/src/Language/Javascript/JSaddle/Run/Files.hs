@@ -263,7 +263,7 @@ jsaddleCoreJs = "\
     \      }\n\
     \    }\n\
     \  };\n\
-    \  var runSyncCallback = function(callback, that, args) {\n\
+    \  var runSyncCallback = function(callback, callbackObj, that, args) {\n\
     \    // Make sure all pending responses are sent\n\
     \    doSendRsp();\n\
     \    syncDepth++;\n\
@@ -275,6 +275,7 @@ jsaddleCoreJs = "\
     \        processedAsyncReqs,\n\
     \        threadId,\n\
     \        callback,\n\
+    \        callbackObj,\n\
     \        that,\n\
     \        args\n\
     \      ]\n\
@@ -300,6 +301,10 @@ jsaddleCoreJs = "\
     \          // now - it's possible the next item in the queue will make use of\n\
     \          // something we were supposed to produce, so if we run that without\n\
     \          // returning first, it won't be available\n\
+    \          sendRspImmediate({\n\
+    \            'tag': 'AsyncMode',\n\
+    \            'contents': []\n\
+    \          });\n\
     \          setTimeout(processAllEnqueuedReqs, 0);\n\
     \        }\n\
     \        return unwrapVal(syncReq.contents);\n\
@@ -308,7 +313,13 @@ jsaddleCoreJs = "\
     \        threads[threadId] = null;\n\
     \        syncDepth--;\n\
     \        window.jsaddleInternals.syncDepth = syncDepth;\n\
-    \        if(syncDepth === 0) setTimeout(processAllEnqueuedReqs, 0);\n\
+    \        if(syncDepth === 0) {\n\
+    \          sendRspImmediate({\n\
+    \            'tag': 'AsyncMode',\n\
+    \            'contents': []\n\
+    \          });\n\
+    \          setTimeout(processAllEnqueuedReqs, 0);\n\
+    \        }\n\
     \        if (syncReq.contents.Left) {\n\
     \          throw syncReq.contents.Left;\n\
     \        } else {\n\
@@ -328,8 +339,9 @@ jsaddleCoreJs = "\
     \  });\n\
     \  var newSyncCallback = function(callbackId) {\n\
     \    var callback = function() {\n\
-    \      return runSyncCallback(callbackId, wrapVal(this), Array.prototype.slice.call(arguments).map(wrapVal));\n\
+    \      return runSyncCallback(callbackId, wrapVal(callback), wrapVal(this), Array.prototype.slice.call(arguments).map(wrapVal));\n\
     \    };\n\
+    \    callback.displayName = 'callback' + callbackId;\n\
     \    callbackRegistry.register(callback, callbackId);\n\
     \    return callback;\n\
     \  };\n\
@@ -339,6 +351,7 @@ jsaddleCoreJs = "\
     \        'tag': 'CallAsync',\n\
     \        'contents': [\n\
     \          callbackId,\n\
+    \          wrapVal(callback),\n\
     \          wrapVal(this),\n\
     \          Array.prototype.slice.call(arguments).map(wrapVal)\n\
     \        ]\n\
@@ -363,7 +376,6 @@ jsaddleCoreJs = "\
     \      var req = tryReq.req;\n\
     \      switch(req.tag) {\n\
     \      case 'FreeRef':\n\
-    \        console.log('FreeRef', req.contents);\n\
     \        vals.delete(req.contents);\n\
     \        break;\n\
     \      case 'NewJson':\n\
@@ -453,6 +465,7 @@ jsaddleCoreJs = "\
     \    asyncReqs: asyncReqs,\n\
     \    asyncReqsToIgnore: asyncReqsToIgnore,\n\
     \    processedAsyncReqs: processedAsyncReqs,\n\
+    \    callbackRegistry: callbackRegistry,\n\
     \  };\n\
     \  return {\n\
     \    processReq: processAsyncReq,\n\

@@ -45,7 +45,7 @@ module Language.Javascript.JSaddle.Run (
 
 #ifndef ghcjs_HOST_OS
 import Control.Exception (try, SomeException(..), throwIO)
-import Control.Monad (when, join, void, unless, forever)
+import Control.Monad (when, join, void, unless, forever, replicateM_)
 import Control.Monad.Except (catchError)
 import Control.Monad.Trans.Reader (runReaderT, asks)
 import Control.Monad.IO.Class (MonadIO(..))
@@ -68,6 +68,14 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
 import GHCJS.Prim.Internal (primToJSVal)
+import qualified Data.Set as Set
+import Data.IntMap (IntMap)
+import qualified Data.IntMap as IntMap
+
+import GHC.Exts.Heap.Closures
+import GHC.Exts.Heap
+import GHC.HeapView
+import System.Mem
 
 import Language.Javascript.JSaddle.Types
 import Language.Javascript.JSaddle.Value (valToText)
@@ -217,6 +225,7 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
   --}
   let sendAsyncReqsBatch b = do
         let b' = b <&> \case
+              (_, SyncBlockReq_Req r@(TryReq _ (Req_FreeRef _))) -> r --TODO: Change these so they don't get the threadid wrong in the first place
               (0, SyncBlockReq_Req r) -> r
               sr -> error $ "Trying to send a req async, but it needs to be sent inside a sync block: " <> show sr
         log ("sendReqsBatch " <> tshow b')
@@ -331,12 +340,12 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
             return mResultVar
           forM_ mResultVar $ \resultVar -> do
             putMVar resultVar primVal
-        Rsp_CallAsync callbackId this args -> do
+        Rsp_CallAsync callbackId fObj this args -> do
           mCallback <- fmap (M.lookup callbackId) $ atomically $ readTVar callbacks
           case mCallback of
             Just callback -> do
               _ <- forkIO $ void $ flip runJSM env $ do
-                _ <- join $ callback <$> wrapJSVal this <*> traverse wrapJSVal args
+                _ <- join $ callback <$> wrapJSVal fObj <*> wrapJSVal this <*> traverse wrapJSVal args
                 return ()
               return ()
             Nothing -> error $ "callback " <> show callbackId <> " called, but does not exist"
@@ -361,6 +370,7 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
           case mThisSync of
             Nothing -> putStrLn $ "Rsp_Sync: " <> show syncReqId <> " not found"
             Just thisSync -> putMVar thisSync ()
+        Rsp_AsyncMode -> endSync
       env = JSContextRef
         { _jsContextRef_sendReq = \req -> do
             log $ "sendReq: " <> tshow req
@@ -383,10 +393,10 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
         , _jsContextRef_waitForResults = Nothing
         }
       processSyncCommand = \case
-        SyncCommand_StartCallback acked (JSThreadId jsThreadId) callbackId this args -> do --TODO: Leave JSThreadId packed
+        SyncCommand_StartCallback acked (JSThreadId jsThreadId) callbackId fObj this args -> do --TODO: Leave JSThreadId packed
           mCallback <- fmap (M.lookup callbackId) $ atomically $ readTVar callbacks
           case mCallback of
-            Just (callback :: JSVal -> [JSVal] -> JSM JSVal) -> do
+            Just (callback :: JSVal -> JSVal -> [JSVal] -> JSM JSVal) -> do
               log $ "processSyncCommand: Found callback " <> tshow callbackId
               threadId <- myThreadId
               syncStateLocal <- newMVar SyncState_InSync
@@ -399,7 +409,7 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
                                 , _jsContextRef_myThreadId = threadId
                                 , _jsContextRef_syncState = syncStateLocal }
                   run = do
-                    (Right <$>) $ join $ callback <$> wrapJSVal this <*> traverse wrapJSVal args
+                    (Right <$>) $ join $ callback <$> wrapJSVal fObj <*> wrapJSVal this <*> traverse wrapJSVal args
               log $ "processSyncCommand: Running callback " <> tshow callbackId
               ackReqs acked
               result <- startSync --TODO: If this is empty, we ought to dequeueAllPendingReqs; however, if we did that, we would need to communicate that fact, so that the JS side knows it doesn't need to ignore any async Reqs
@@ -418,6 +428,40 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
   arg <- flip runJSMCheap env $ do --Note: This must be runJSMCheap, because we cannot wait for a sync here
     argRef <- wrapRef $ RefId (-1)
     JSVal <$> lazyValResult argRef
+  forkIO $ replicateM_ 20 $ do
+    threadDelay 5000000
+    performGC
+    log . tshow . M.keys =<< atomically (readTVar callbacks)
+    boxes <- sequence
+      [ fmap (\a -> (Set.singleton "getJsonReqs", asBox a)) $ atomically $ readTVar getJsonReqs
+      , fmap (\a -> (Set.singleton "nextCallbackId", asBox a)) $ atomically $ readTVar nextCallbackId
+      , fmap (\a -> (Set.singleton "callbacks", asBox a)) $ atomically $ readTVar callbacks
+      , fmap (\a -> (Set.singleton "nextTryId", asBox a)) $ atomically $ readTVar nextTryId
+      , fmap (\a -> (Set.singleton "tries", asBox a)) $ atomically $ readTVar tries
+      , fmap (\a -> (Set.singleton "pendingResults", asBox a)) $ atomically $ readTVar pendingResults
+      , fmap (\a -> (Set.singleton "syncCallbackState", asBox a)) $ tryReadMVar syncCallbackState
+      ]
+    let propagateReachability :: Monoid a => IntMap (HeapGraphEntry a) -> IntMap (HeapGraphEntry a)
+        propagateReachability orig = IntMap.mapWithKey (\k v -> v { hgeData = IntMap.findWithDefault (error "propagateReachability: invalid index") k values }) orig
+          where backLinks = IntMap.fromListWith (<>) $ do
+                  (k, v) <- IntMap.toList orig
+                  childK <- catMaybes $ toList $ hgeClosure v
+                  pure (childK, Set.singleton k)
+                values = flip IntMap.mapWithKey orig $ \myIndex _ ->
+                  let parents = IntMap.findWithDefault mempty myIndex backLinks
+                  in mconcat
+                     [ hgeData $ IntMap.findWithDefault (error "propagateReachability: invalid index") myIndex orig
+                     , mconcat $ toList parents <&> \parent ->
+                         IntMap.findWithDefault (error "propagateReachability: invalid index") parent values
+                     ]
+    log "Starting to get heap graph"
+    (g@(HeapGraph m), _) <- multiBuildHeapGraph 8 boxes
+    forM_ (toList $ propagateReachability m) $ \case
+      h@(HeapGraphEntry { hgeClosure = c@(MutVarClosure _ _) }) -> do
+        log $ tshow h
+        log . tshow =<< buildHeapGraph 5 () (hgeBox h)
+      _ -> pure ()
+    log $ "Heap graph has " <> tshow (length m) <> " items"
   return
     ( \rsp -> do
         log $ "processRsp: " <> tshow rsp
