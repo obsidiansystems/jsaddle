@@ -125,11 +125,23 @@ jsaddleCoreJs = "\
     \  var vals = new Map();\n\
     \  var responses = [];\n\
     \  var sendRspScheduled = false;\n\
+    \  var internals = {\n\
+    \    vals: vals,\n\
+    \    responses: responses,\n\
+    \    nextValId: nextValId,\n\
+    \    syncRequests: syncRequests,\n\
+    \    deadTries: deadTries,\n\
+    \    asyncReqs: asyncReqs,\n\
+    \    asyncReqsToIgnore: asyncReqsToIgnore,\n\
+    \    processedAsyncReqs: processedAsyncReqs,\n\
+    \    callbackRegistry: callbackRegistry,\n\
+    \    threads: threads,\n\
+    \  };\n\
     \  var doSendRsp = function () {\n\
     \    if (responses.length > 0) {\n\
     \      var responses_ = responses;\n\
     \      responses = [];\n\
-    \      window.jsaddleInternals.responses = responses;\n\
+    \      internals.responses = responses;\n\
     \      sendRsp(responses_);\n\
     \    }\n\
     \  };\n\
@@ -252,17 +264,17 @@ jsaddleCoreJs = "\
     \      var req = asyncReqs.dequeue();\n\
     \      if(asyncReqsToIgnore > 0) {\n\
     \        asyncReqsToIgnore--;\n\
-    \        window.jsaddleInternals.asyncReqsToIgnore = asyncReqsToIgnore;\n\
+    \        internals.asyncReqsToIgnore = asyncReqsToIgnore;\n\
     \      } else {\n\
     \        processedAsyncReqs++;\n\
-    \        window.jsaddleInternals.processedAsyncReqs = processedAsyncReqs;\n\
+    \        internals.processedAsyncReqs = processedAsyncReqs;\n\
     \        processSingleReq(1, req);\n\
     \      }\n\
     \    }\n\
     \  };\n\
     \  var decreaseDepth = function() {\n\
     \    syncDepth--;\n\
-    \    window.jsaddleInternals.syncDepth = syncDepth;\n\
+    \    internals.syncDepth = syncDepth;\n\
     \    if(syncDepth === 0) {\n\
     \      // Ensure that all remaining requests are cleared out in a timely\n\
     \      // fashion.  Any incoming websocket requests will also run\n\
@@ -281,7 +293,7 @@ jsaddleCoreJs = "\
     \  };\n\
     \  var increaseDepth = function() {\n\
     \    syncDepth++;\n\
-    \    window.jsaddleInternals.syncDepth = syncDepth;\n\
+    \    internals.syncDepth = syncDepth;\n\
     \  };\n\
     \  var runSyncCallback = function(callback, callbackObj, that, args) {\n\
     \    // Make sure all pending responses are sent\n\
@@ -300,7 +312,7 @@ jsaddleCoreJs = "\
     \      ]\n\
     \    });\n\
     \    asyncReqsToIgnore = newReqs;\n\
-    \    window.jsaddleInternals.asyncReqsToIgnore = asyncReqsToIgnore.length;\n\
+    \    internals.asyncReqsToIgnore = asyncReqsToIgnore.length;\n\
     \    syncRequests.enqueueArray(newReqs);\n\
     \    while(true) {\n\
     \      var syncReq = getRunnableSyncRequest();\n\
@@ -444,21 +456,10 @@ jsaddleCoreJs = "\
     \      processAllEnqueuedReqs();\n\
     \    }\n\
     \  };\n\
-    \  window.jsaddleInternals = {\n\
-    \    vals: vals,\n\
-    \    responses: responses,\n\
-    \    nextValId: nextValId,\n\
-    \    syncRequests: syncRequests,\n\
-    \    deadTries: deadTries,\n\
-    \    asyncReqs: asyncReqs,\n\
-    \    asyncReqsToIgnore: asyncReqsToIgnore,\n\
-    \    processedAsyncReqs: processedAsyncReqs,\n\
-    \    callbackRegistry: callbackRegistry,\n\
-    \    threads: threads,\n\
-    \  };\n\
     \  return {\n\
     \    processReq: processAsyncReq,\n\
-    \    processReqs: function(reqs) { for (var req of reqs) { processAsyncReq(req);}}\n\
+    \    processReqs: function(reqs) { for (var req of reqs) { processAsyncReq(req);}},\n\
+    \    internals: internals,\n\
     \  };\n\
     \}\n\
     \"
