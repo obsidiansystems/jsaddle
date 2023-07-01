@@ -125,6 +125,11 @@ jsaddleCoreJs = "\
     \  var vals = new Map();\n\
     \  var responses = [];\n\
     \  var sendRspScheduled = false;\n\
+    \  var nextValId = -2;\n\
+    \  var syncRequests = new Queue();\n\
+    \  // `threads` contains a Queue for any thread that is blocked\n\
+    \  var threads = new Map();\n\
+    \  var nextThreadId = 2;\n\
     \  var internals = {\n\
     \    vals: vals,\n\
     \    responses: responses,\n\
@@ -219,11 +224,6 @@ jsaddleCoreJs = "\
     \  };\n\
     \  vals.set(1, global);\n\
     \  result(-1, arg);\n\
-    \  var nextValId = -2;\n\
-    \  var syncRequests = new Queue();\n\
-    \  // `threads` contains a Queue for any thread that is blocked\n\
-    \  var threads = new Map();\n\
-    \  var nextThreadId = 2;\n\
     \  var getNextSyncRequest = function() {\n\
     \    if(syncRequests.isEmpty()) {\n\
     \      // Make sure all pending responses are sent\n\
