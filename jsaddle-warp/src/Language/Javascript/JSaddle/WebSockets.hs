@@ -27,7 +27,9 @@ module Language.Javascript.JSaddle.WebSockets (
 ) where
 
 import Control.Monad (forever)
-import Control.Concurrent (forkIO, threadDelay)
+import Control.Concurrent (forkIO, threadDelay, MVar, newMVar, modifyMVar_, readMVar)
+import Control.Monad.STM (STM, atomically, retry)
+import Control.Concurrent.STM.TVar (TVar, readTVar, writeTVar, modifyTVar', newTVarIO)
 import Control.Exception (handle, AsyncException, throwIO, fromException)
 
 import Data.Monoid ((<>))
@@ -37,8 +39,9 @@ import Network.Wai
        (lazyRequestBody, Application, Request, Response,
         ResponseReceived)
 import Network.WebSockets
-       (ConnectionOptions(..), sendTextData,
-        receiveDataMessage, acceptRequest, ServerApp, sendPing)
+       (ConnectionOptions(..), Connection, sendTextData,
+        receiveDataMessage, acceptRequest, ServerApp, sendPing,
+        requestPath, pendingRequest)
 import Network.Wai.Handler.WebSockets (websocketsOr)
 import Network.HTTP.Types (Status(..))
 
@@ -46,7 +49,8 @@ import Language.Javascript.JSaddle.Types (JSM(..))
 import qualified Network.Wai as W
        (responseLBS, requestMethod, pathInfo, modifyResponse, responseStatus)
 import qualified Data.ByteString.Base64.URL as Base64URL
-import qualified Data.Text as T (pack)
+import Data.Text (Text)
+import qualified Data.Text as T (pack, drop)
 import Data.Text.Encoding (decodeUtf8)
 import qualified Network.HTTP.Types as H
        (status403, status200)
@@ -57,7 +61,8 @@ import Data.IORef
        (readIORef, newIORef, atomicModifyIORef')
 import Data.ByteString.Lazy (ByteString)
 import qualified Data.ByteString.Lazy as LBS (stripPrefix)
-import Language.Javascript.JSaddle (runJSM, JSVal)
+import Language.Javascript.JSaddle
+       (runJSM, JSVal, TryReq, JSContextRef, SyncBlockReq, SyncCommand, Rsp)
 import qualified Data.Map as Map
 import System.Entropy (getEntropy)
 import Control.Exception (try, SomeException (..))
@@ -66,6 +71,14 @@ import Control.Exception (try, SomeException (..))
 
 import Language.Javascript.JSaddle.WebSockets.Compat (getTextMessageByteString)
 
+type JavascriptSession =
+  ( [Rsp] -> IO ()
+  , SyncCommand -> IO [(Int, SyncBlockReq)]
+  , JSContextRef
+  , JSVal
+  )
+
+type ConnId = Text
 
 -- | Main Implementation that runs the given JSM Code as a Wai-application.
 jsaddleOr :: ConnectionOptions
@@ -74,17 +87,36 @@ jsaddleOr :: ConnectionOptions
           -> IO Application
 jsaddleOr opts entryPoint otherApp = do
     syncFuncs <- newIORef Map.empty
+    activeSessionsViaXHR <- newIORef (Map.empty :: Map.Map ConnId (JavascriptSession, MVar ([TryReq] -> IO ()), (TVar [TryReq])))
     let wsApp :: ServerApp
         wsApp pending_conn = do
+            let path = decodeUtf8 $ requestPath $ pendingRequest pending_conn
             conn <- acceptRequest pending_conn
-            (processResult, processSyncCommand, env, arg) <- runJavaScript $ \req -> do
-              sendTextData conn $ encode req
-            connId <- decodeUtf8 . Base64URL.encode <$> getEntropy 24
-            sendTextData conn connId
-            atomicModifyIORef' syncFuncs $ \fs ->
-              ( Map.insertWith (error $ "duplicate connection ID" <> show connId) connId processSyncCommand fs
-              , ()
-              )
+            let sendTryReqs = sendTextData conn . encode
+            wsAppWithSession conn =<< if path == "/"
+              then do
+                -- Start a new session
+                sendTryReqsFMVar <- newMVar sendTryReqs
+                (connId, session) <- startNewSession (sendTextData conn) sendTryReqsFMVar
+                pure (connId, session)
+              else do
+                -- Connect to an existing session started via begin-session XHR
+                let connId = T.drop 1 path -- should be "/" followed by connId
+                m <- readIORef activeSessionsViaXHR
+                case Map.lookup connId m of
+                  Nothing -> error "connId not found"
+                  Just (session, sendTryReqsFMVar, tryReqsToBeDone) -> do
+                    -- switch from XHR to websocket for sending TryReqs
+                    modifyMVar_ sendTryReqsFMVar $ \_ -> do
+                      rs <- atomically $ do
+                        rs <- readTVar tryReqsToBeDone
+                        writeTVar tryReqsToBeDone []
+                        pure rs
+                      sendTryReqs rs
+                      pure sendTryReqs
+                    pure (connId, session)
+
+        wsAppWithSession conn (connId, (processResult, _, _, _))= do
             _ <- forkIO . forever $
                 receiveDataMessage conn >>= \msg -> case getTextMessageByteString msg of
                     Just t -> case decode t of
@@ -95,11 +127,26 @@ jsaddleOr opts entryPoint otherApp = do
                             Left e@(SomeException _) -> putStrLn $ "jsaddle processResult failed: " <> show e
                             Right _ -> return ()
                     _ -> error "jsaddle WebSocket unexpected binary data"
-            try (runJSM (entryPoint arg) env) >>= \case
-              Left e@(SomeException _) -> putStrLn $ "done: left: " <> show e
-              Right _ -> putStrLn $ "done: right"
             waitTillClosed conn
             atomicModifyIORef' syncFuncs $ \fs -> (Map.delete connId fs, ())
+            -- TODO: cleanup session in case of xhr only session
+            atomicModifyIORef' activeSessionsViaXHR $ \fs -> (Map.delete connId fs, ())
+
+        startNewSession :: (ConnId -> IO ()) -> MVar ([TryReq] -> IO ()) -> IO (ConnId, JavascriptSession)
+        startNewSession sendConnId sendTryReqsFMVar = do
+            connId <- decodeUtf8 . Base64URL.encode <$> getEntropy 24
+            sendConnId connId
+            session@(processResult, processSyncCommand, env, arg) <- runJavaScript $ \req -> do
+              sendTryReqsF <- readMVar sendTryReqsFMVar
+              sendTryReqsF req
+            atomicModifyIORef' syncFuncs $ \fs ->
+              ( Map.insertWith (error $ "duplicate connection ID" <> show connId) connId processSyncCommand fs
+              , ()
+              )
+            forkIO $ try (runJSM (entryPoint arg) env) >>= \case
+              Left e@(SomeException _) -> putStrLn $ "done: left: " <> show e
+              Right _ -> putStrLn $ "done: right"
+            pure (connId, session)
 
         -- Based on Network.WebSocket.forkPingThread
         waitTillClosed conn = ignore `handle` go 1
@@ -125,6 +172,37 @@ jsaddleOr opts entryPoint otherApp = do
                 , ("Access-Control-Allow-Headers", "content-type")
                 ]
                 ""
+            ("POST", ["begin-session"]) -> do
+              tryReqsToBeDone <- newTVarIO mempty
+              sendTryReqsFMVar <- newMVar $ \reqs ->
+                atomically $ modifyTVar' tryReqsToBeDone (<> reqs)
+              (connId, session@(processResult, processSyncCommand, env, arg)) <- startNewSession (const $ pure ()) sendTryReqsFMVar
+              atomicModifyIORef' activeSessionsViaXHR $ \fs ->
+                ( Map.insertWith (error $ "duplicate connection ID" <> show connId) connId (session, sendTryReqsFMVar, tryReqsToBeDone) fs
+                , ()
+                )
+              sendResponse $ W.responseLBS H.status200 [("Content-Type", "application/json"), ("Access-Control-Allow-Origin", "*")] $ encode connId
+
+            ("POST", ["send-rsp", connId]) -> do
+              body <- lazyRequestBody req
+              Just ((processResult, _, _, _), _, _) <- Map.lookup connId <$> readIORef activeSessionsViaXHR
+              _ <- forkIO $ case decode body of
+                Nothing -> putStrLn $ "jsaddle response decode failed: " <> show body
+                Just r  -> do
+                  result <- try $ processResult r
+                  case result of
+                    Left e@(SomeException _) -> putStrLn $ "jsaddle processResult failed: " <> show e
+                    Right _ -> return ()
+              sendResponse $ W.responseLBS H.status200 [("Content-Type", "application/json"), ("Access-Control-Allow-Origin", "*")] $ encode connId
+
+            ("POST", ["get-try-reqs", connId]) -> do
+              Just (_, _, tryReqsToBeDone) <- Map.lookup connId <$> readIORef activeSessionsViaXHR
+              rs <- atomically $ do
+                rs <- readTVar tryReqsToBeDone
+                writeTVar tryReqsToBeDone []
+                pure rs
+              sendResponse $ W.responseLBS H.status200 [("Content-Type", "application/json"), ("Access-Control-Allow-Origin", "*")] $ encode rs
+
             ("POST", ["sync", connId]) -> do
                 Just syncFunc <- Map.lookup connId <$> readIORef syncFuncs
                 body <- lazyRequestBody req
@@ -221,15 +299,15 @@ jsaddleJs' jsaddleUri refreshOnLoad = jsaddleCoreJs <> "\
     \    global.WebSocket = require('ws');\n\
     \}\n\
     \\n\
-    \var connect = function() {\n\
+    \var connectWebsocket = function(o) {\n\
     \    var wsaddress = (typeof(JSADDLE_ROOT) !== 'undefined') ? JSADDLE_ROOT.replace('http', 'ws') : "
       <> maybe "window.location.protocol.replace('http', 'ws')+\"//\"+window.location.hostname+(window.location.port?(\":\"+window.location.port):\"\")"
             (\ s -> "\"ws" <> s <> "\"")
             (jsaddleUri >>= LBS.stripPrefix "http")
       <> ";\n\
     \\n\
-    \    var ws = new WebSocket(wsaddress);\n\
-    \    var connId;\n\
+    \    var ws = new WebSocket(o.connId ? wsaddress + '/' + o.connId: wsaddress);\n\
+    \    var connId = o.connId ? o.connId : undefined;\n\
     \    var sync = function(v) {\n\
     \      var xhr = new XMLHttpRequest();\n\
     \      xhr.open('POST', ((typeof(JSADDLE_ROOT) !== 'undefined') ? JSADDLE_ROOT : '" <> fromMaybe "" jsaddleUri <> "') + '/sync/' + connId, false);\n\
@@ -239,22 +317,71 @@ jsaddleJs' jsaddleUri refreshOnLoad = jsaddleCoreJs <> "\
     \    };\n\
     \\n\
     \    ws.onopen = function(e) {\n\
-    \        var core = jsaddleCoreJs(window, function(a) {\n\
-    \          ws.send(JSON.stringify(a));\n\
-    \        }, sync, 10 /* RESPONSE_BUFFER_MAX_SIZE (0 to disable) */, (typeof(arg) !== 'undefined') ? arg : undefined);\n\
-    \\n\
-    \        ws.onmessage = function(c) {\n\
-    \            connId = c.data;\n\
+    \        var core;\n\
+    \        if (o.core) {\n\
+    \            core = o.core;\n\
+    \            core.internals.sendRsp = function(a) {\n\
+    \              ws.send(JSON.stringify(a));\n\
+    \            };\n\
     \            ws.onmessage = function(e) {\n\
     \                core.processReqs(JSON.parse(e.data));\n\
     \            };\n\
+    \        } else {\n\
+    \            core = jsaddleCoreJs(window, function(a) {\n\
+    \              ws.send(JSON.stringify(a));\n\
+    \            }, sync, 10 /* RESPONSE_BUFFER_MAX_SIZE (0 to disable) */, (typeof(arg) !== 'undefined') ? arg : undefined);\n\
+    \            ws.onmessage = function(c) {\n\
+    \                connId = c.data;\n\
+    \                ws.onmessage = function(e) {\n\
+    \                    core.processReqs(JSON.parse(e.data));\n\
+    \                };\n\
+    \            }\n\
     \        }\n\
     \    };\n\
+    \\n\
     \    ws.onerror = function() {\n\
     \        setTimeout(connect, 1000);\n\
     \    };\n\
     \}\n\
     \\n\
+    \var connectXHR = function() {\n\
+    \    var beginSession = function(v) {\n\
+    \      var xhr = new XMLHttpRequest();\n\
+    \      xhr.open('POST', ((typeof(JSADDLE_ROOT) !== 'undefined') ? JSADDLE_ROOT : '" <> fromMaybe "" jsaddleUri <> "') + '/begin-session', false);\n\
+    \      xhr.setRequestHeader(\"Content-type\", \"application/json\");\n\
+    \      xhr.send(JSON.stringify());\n\
+    \      return JSON.parse(xhr.responseText);\n\
+    \    };\n\
+    \    var connId = beginSession();\n\
+    \    var sync = function(v) {\n\
+    \      var xhr = new XMLHttpRequest();\n\
+    \      xhr.open('POST', ((typeof(JSADDLE_ROOT) !== 'undefined') ? JSADDLE_ROOT : '" <> fromMaybe "" jsaddleUri <> "') + '/sync/' + connId, false);\n\
+    \      xhr.setRequestHeader(\"Content-type\", \"application/json\");\n\
+    \      xhr.send(JSON.stringify(v));\n\
+    \      return JSON.parse(xhr.responseText);\n\
+    \    };\n\
+    \    var sendRsp = function(v) {\n\
+    \      var xhr = new XMLHttpRequest();\n\
+    \      xhr.open('POST', ((typeof(JSADDLE_ROOT) !== 'undefined') ? JSADDLE_ROOT : '" <> fromMaybe "" jsaddleUri <> "') + '/send-rsp/' + connId,false);\n\
+    \      xhr.setRequestHeader(\"Content-type\", \"application/json\");\n\
+    \      xhr.send(JSON.stringify(v));\n\
+    \      return;\n\
+    \    };\n\
+    \\n\
+    \    var core = jsaddleCoreJs(window, sendRsp, sync, 10 /* RESPONSE_BUFFER_MAX_SIZE (0 to disable) */, (typeof(arg) !== 'undefined') ? arg : undefined);\n\
+    \\n\
+    \    var processReqsViaXHR = function() {\n\
+    \      var xhr = new XMLHttpRequest();\n\
+    \      xhr.open('POST', ((typeof(JSADDLE_ROOT) !== 'undefined') ? JSADDLE_ROOT : '" <> fromMaybe "" jsaddleUri <> "') + '/get-try-reqs/' + connId,false);\n\
+    \      xhr.setRequestHeader(\"Content-type\", \"application/json\");\n\
+    \      xhr.send();\n\
+    \      core.processReqs(JSON.parse(xhr.responseText));\n\
+    \      return;\n\
+    \    };\n\
+    \\n\
+    \    return { connId, core, processReqsViaXHR };\n\
+    \}\n\
+    \\n\
     \ " <> ghcjsHelpers <> "\
-    \connect();\n\
+    \if (typeof dontAutoConnectWebsocket === 'boolean' ? !dontAutoConnectWebsocket: true) { connectWebsocket({}) };\n\
     \"

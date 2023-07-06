@@ -141,13 +141,14 @@ jsaddleCoreJs = "\
     \    processedAsyncReqs: processedAsyncReqs,\n\
     \    callbackRegistry: callbackRegistry,\n\
     \    threads: threads,\n\
+    \    sendRsp: sendRsp,\n\
     \  };\n\
     \  var doSendRsp = function () {\n\
     \    if (responses.length > 0) {\n\
     \      var responses_ = responses;\n\
     \      responses = [];\n\
     \      internals.responses = responses;\n\
-    \      sendRsp(responses_);\n\
+    \      internals.sendRsp(responses_);\n\
     \    }\n\
     \  };\n\
     \  var appendRsp = function(rsp) {\n\
