@@ -7,7 +7,7 @@ import Control.Monad (forever, unless, void)
 import Control.Monad.IO.Class (MonadIO(..))
 import qualified Data.ByteString.Lazy.Char8 as BS
 
-import Language.Javascript.JSaddle (askJSM)
+import Language.Javascript.JSaddle (askJSM, (#))
 import Language.Javascript.JSaddleSpec (spec)
 import Language.Javascript.JSaddle.WebSockets (jsaddleJs', jsaddleAppWithJs, jsaddleOr)
 
@@ -26,7 +26,8 @@ main = do
   nodeClientPath <- setupNodeClient
   context <- newEmptyMVar
   let
-    f _ = do
+    f arg = do
+      _ <- (arg # "session_started") [True]
       _ <- liftIO $ tryTakeMVar context
       liftIO . putMVar context =<< askJSM
       liftIO . forever $ threadDelay maxBound
@@ -35,11 +36,18 @@ main = do
     uri = BS.pack $ "http://0.0.0.0:" <> show port
     jsaddleApp = jsaddleAppWithJs (jsaddleJs' (Just uri) False)
 
-  void $ forkIO $ runSettings (setPort port (setTimeout 3600 defaultSettings)) =<<
-      jsaddleOr defaultConnectionOptions f jsaddleApp
+    runClientInMode mode = do
+      void $ forkIO $ runSettings (setPort port (setTimeout 3600 defaultSettings)) =<<
+          jsaddleOr defaultConnectionOptions f jsaddleApp
 
-  withCreateProcess (proc "node" [nodeClientPath, show port]) $ \_ _ _ _ -> do
-    hspec $ aroundAll (bracket (takeMVar context) (putMVar context)) spec
+      withCreateProcess (proc "node" [nodeClientPath, show port, mode]) $ \_ _ _ _ -> do
+        hspec $ aroundAll (bracket (takeMVar context) (putMVar context)) spec
+
+      void $ tryTakeMVar context
+
+  runClientInMode "websocket"
+  runClientInMode "xhr"
+  runClientInMode "xhronly"
 
 
 setupNodeClient :: IO (FilePath)
