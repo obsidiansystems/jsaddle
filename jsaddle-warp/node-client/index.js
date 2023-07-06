@@ -40,7 +40,7 @@ let request = http.get(jsaddleRoot + '/jsaddle.js', (res) => {
       var {connId, core, processReqsViaXHR, connectWebsocket} = function() {
         var dontAutoConnectWebsocket = true;
         eval(data);
-        var vals = connectXHR(connId);
+        var vals = connectXHR();
         return Object.assign(vals, {connectWebsocket});
       } ();
 
