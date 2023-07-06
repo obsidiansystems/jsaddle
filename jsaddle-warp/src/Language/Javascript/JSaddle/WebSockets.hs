@@ -163,7 +163,7 @@ jsaddleOr opts entryPoint otherApp = do
 
         syncHandler :: Application
         syncHandler req sendResponse = case (W.requestMethod req, W.pathInfo req) of
-            ("OPTIONS", ["sync", connId]) -> do
+            ("OPTIONS", _) -> do
               sendResponse $ W.responseLBS
                 H.status200
                 [ ("Allow", "OPTIONS, POST")
