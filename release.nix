@@ -6,7 +6,7 @@
 }:
 let
   pkgs = reflex-platform.pkgs;
-  project = reflex-platform.project ({ pkgs, thunkSource, ... }: {
+  project = (reflex-platform.project ({ pkgs, thunkSource, ... }: {
     name = "jsaddle-project";
     src = ./.;
     compiler-nix-name = "ghc8107Splices";
@@ -22,6 +22,13 @@ let
       ]);
     shellTools = {
       cabal = "3.8.1.0";
+    };
+  })).extend (self: super: {
+    shells = super.shells // {
+      ghc = self.shell-driver {
+        crossBuilds = [ ];
+        buildInputs = with self.pkgs; [ nodejs ];
+      };
     };
   });
 
