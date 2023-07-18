@@ -65,11 +65,16 @@ module Language.Javascript.JSaddle.Object (
 
   -- * Calling Haskell From JavaScript
   , Function(..)
+  , Function'(..)
   , function
+  , function'
   , asyncFunction
   , freeFunction
+  , freeFunction'
   , fun
+  , fun'
   , JSCallAsFunction
+  , JSCallAsFunction'
   -- ** Object Constructors
 
   -- | There is no good way to support calling haskell code as a JavaScript
@@ -107,7 +112,7 @@ import qualified Data.Map as Map
 #ifdef ghcjs_HOST_OS
 import GHCJS.Types (nullRef)
 import GHCJS.Foreign.Callback
-       (releaseCallback, syncCallback2, asyncCallback2, OnBlocked(..), Callback)
+       (releaseCallback, syncCallback2, syncCallback2', asyncCallback2, OnBlocked(..), Callback)
 import GHCJS.Marshal (ToJSVal(..))
 import JavaScript.Array (MutableJSArray)
 import qualified JavaScript.Array as Array (toListIO, fromListIO)
@@ -116,7 +121,7 @@ import JavaScript.Object (create, listProps)
 import Language.Javascript.JSaddle.Monad (JSM)
 import Language.Javascript.JSaddle.Types
        (JSString, Object(..),
-        JSVal(..), JSCallAsFunction)
+        JSVal(..), JSCallAsFunction, JSCallAsFunction')
 #else
 import GHCJS.Marshal.Internal (ToJSVal(..))
 import Language.Javascript.JSaddle.Native
@@ -124,7 +129,7 @@ import Language.Javascript.JSaddle.Native
 import Language.Javascript.JSaddle.Monad (JSM)
 import Language.Javascript.JSaddle.Types
        (JSString, Object(..), CallbackId, PrimVal(..),
-        SomeJSArray(..), JSVal(..), JSCallAsFunction)
+        SomeJSArray(..), JSVal(..), JSCallAsFunction, JSCallAsFunction')
 import JavaScript.Object.Internal (create, listProps)
 import Language.Javascript.JSaddle.Run
 import GHCJS.Prim.Internal (primToJSVal)
@@ -444,16 +449,25 @@ obj = create
 fun :: JSCallAsFunction -> JSCallAsFunction
 fun = id
 
+fun' :: JSCallAsFunction' -> JSCallAsFunction'
+fun' = id
+
 #ifdef ghcjs_HOST_OS
 data Function = Function {functionCallback :: Callback (JSVal -> JSVal -> IO ()), functionObject :: Object}
+
+data Function' = Function' {functionCallback' :: Callback (JSVal -> JSVal -> IO JSVal), functionObject' :: Object}
 #else
 data Function = Function {functionCallback :: CallbackId, functionObject :: Object}
-#endif
 
+data Function' = Function' {functionCallback' :: CallbackId, functionObject' :: Object}
+#endif
 
 #ifdef ghcjs_HOST_OS
 foreign import javascript unsafe "$r = function () { $1(this, arguments); }"
     makeFunctionWithCallback :: Callback (JSVal -> JSVal -> IO ()) -> IO Object
+
+foreign import javascript unsafe "$r = function () { return $1(this, arguments); }"
+    makeFunctionWithCallback' :: Callback (JSVal -> JSVal -> IO JSVal) -> IO Object
 #endif
 
 -- | Make a JavaScript function object that wraps a Haskell function.
@@ -472,6 +486,23 @@ function f = do
 function f = do
     (cb, f') <- newSyncCallback f --TODO: "ContinueAsync" behavior
     return $ Function cb $ Object f'
+#endif
+
+-- | Make a JavaScript function object that wraps a Haskell function.
+-- Calls made to the function will be synchronous
+function' :: JSCallAsFunction' -- ^ Haskell function to call
+         -> JSM Function'     -- ^ Returns a JavaScript function object that will
+                             --   call the Haskell one when it is called
+#ifdef ghcjs_HOST_OS
+function' f = do
+    callback <- syncCallback2' $ \this args -> do
+      rargs <- Array.toListIO (coerce args)
+      f this this rargs -- TODO pass function object through
+    Function' callback <$> makeFunctionWithCallback' callback
+#else
+function' f = do
+    (cb, f') <- newSyncCallback'' f --TODO: "ContinueAsync" behavior
+    return $ Function' cb $ Object f'
 #endif
 
 -- | Make a JavaScript function object that wraps a Haskell function.
@@ -500,8 +531,20 @@ freeFunction (Function syncCallbackId _) = do
   freeSyncCallback syncCallbackId
 #endif
 
+freeFunction' :: Function' -> JSM ()
+#ifdef ghcjs_HOST_OS
+freeFunction' (Function' callback _) =
+    releaseCallback callback
+#else
+freeFunction' (Function' syncCallbackId _) = do
+  freeSyncCallback syncCallbackId
+#endif
+
 instance ToJSVal Function where
     toJSVal = toJSVal . functionObject
+
+instance ToJSVal Function' where
+    toJSVal = toJSVal . functionObject'
 
 -- | A callback to Haskell can be used as a JavaScript value.  This will create
 --   an anonymous JavaScript function object.  Use 'function' to create one with

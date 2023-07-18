@@ -63,6 +63,7 @@ module Language.Javascript.JSaddle.Types (
   , JSString(..)
   , Nullable(..)
   , JSCallAsFunction
+  , JSCallAsFunction'
 
   -- * Debugging
   , JSadddleHasCallStack
@@ -403,6 +404,11 @@ type JSCallAsFunction = JSVal      -- ^ Function object
                                    --   different thread.  If you need to get a
                                    --   value out pass in a continuation function
                                    --   as an argument and invoke it from haskell.
+
+type JSCallAsFunction' = JSVal      -- ^ Function object
+                     -> JSVal      -- ^ this
+                     -> [JSVal]    -- ^ Function arguments
+                     -> JSM JSVal  -- ^ Return value
 
 #ifndef ghcjs_HOST_OS
 
