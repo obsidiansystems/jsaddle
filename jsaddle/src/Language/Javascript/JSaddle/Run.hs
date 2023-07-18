@@ -232,6 +232,8 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
                 return ()
               return ()
             Nothing -> error $ "callback " <> show callbackId <> " called, but does not exist"
+        Rsp_FreeCallback callbackId -> do
+          liftIO $ atomically $ modifyTVar' callbacks $ M.delete callbackId
         --TODO: We will need a synchronous version of this anyway, so maybe we should just do it that way
         Rsp_FinishTry tryId tryResult -> do
           mThisTry <- atomically $ do

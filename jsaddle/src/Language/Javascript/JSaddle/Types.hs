@@ -542,6 +542,7 @@ data Rsp
    --TODO: When an exception is thrown, make sure we stop waiting for any results from them; otherwise, the datastructures waiting for those results will leak
    | Rsp_FinishTry TryId (Either ValId ()) -- Left if an exception was thrown; Right if not
    | Rsp_Sync SyncReqId
+   | Rsp_FreeCallback CallbackId
    deriving (Show, Read, Eq, Generic)
 
 instance ToJSON Rsp where

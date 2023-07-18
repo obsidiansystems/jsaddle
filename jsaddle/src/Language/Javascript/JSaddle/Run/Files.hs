@@ -300,11 +300,18 @@ jsaddleCoreJs = "\
     \      }\n\
     \    }\n\
     \  };\n\
+    \  var callbackRegistry = new FinalizationRegistry(function(callbackId) {\n\
+    \    appendRsp({\n\
+    \      'tag': 'FreeCallback',\n\
+    \      'contents': callbackId\n\
+    \    });\n\
+    \  });\n\
     \  var newSyncCallback = function(callbackId) {\n\
     \    var callback = function() {\n\
     \      return runSyncCallback(callbackId, wrapVal(callback), wrapVal(this), Array.prototype.slice.call(arguments).map(wrapVal));\n\
     \    };\n\
     \    callback.displayName = 'callback' + callbackId;\n\
+    \    callbackRegistry.register(callback, callbackId);\n\
     \    return callback;\n\
     \  };\n\
     \  var newAsyncCallback = function(callbackId) {\n\
@@ -319,6 +326,7 @@ jsaddleCoreJs = "\
     \        ]\n\
     \      });\n\
     \    };\n\
+    \    callbackRegistry.register(callback, callbackId);\n\
     \    return callback;\n\
     \  };\n\
     \  var deadTries = new Map();\n\
