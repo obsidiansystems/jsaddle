@@ -99,7 +99,11 @@ module Language.Javascript.JSaddle.Object (
 ) where
 
 import Prelude hiding ((!!))
+import Control.Monad
 import Data.Coerce (coerce)
+import Data.Map (Map)
+import Data.Text (Text)
+import qualified Data.Map as Map
 #ifdef ghcjs_HOST_OS
 import GHCJS.Types (nullRef)
 import GHCJS.Foreign.Callback
@@ -149,6 +153,14 @@ import Control.Lens (IndexPreservingGetter, to)
 --   as it returns something we can make into a Object.
 instance MakeObject v => MakeObject (JSM v) where
     makeObject v = v >>= makeObject
+
+-- | Object can be made from a Map of JSVals
+instance ToJSVal v => MakeObject (Map Text v) where
+  makeObject m = do
+    o <- obj
+    forM_ (Map.toList m) $ \(k, v) -> do
+      (o <# k) =<< toJSVal v
+    pure o
 
 -- | Lookup a property based on its name.
 --
