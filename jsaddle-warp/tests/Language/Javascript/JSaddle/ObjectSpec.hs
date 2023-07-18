@@ -4,6 +4,7 @@ module Language.Javascript.JSaddle.ObjectSpec where
 import Prelude hiding ((!!))
 import Control.Lens.Operators ((^.))
 import Control.Monad.IO.Class (MonadIO(..))
+import Control.Concurrent
 
 import Data.IORef
 import qualified Data.Text as T
@@ -105,3 +106,12 @@ spec = do
         Function' _ f <- function' $ \_ _ _ -> do
           toJSVal "callback ran"
         call f f ()
+
+  describe "asyncFunction" $ do
+    it "creates an async function" $
+      resultShouldBe "callback ran" $ do
+        mVar <- liftIO $ newEmptyMVar
+        Function _ f <- asyncFunction $ \_ _ _ -> do
+          liftIO $ putMVar mVar "callback ran"
+        call f f ()
+        liftIO $ takeMVar mVar
