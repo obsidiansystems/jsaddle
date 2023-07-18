@@ -3,7 +3,9 @@ module Language.Javascript.JSaddle.ObjectSpec where
 
 import Prelude hiding ((!!))
 import Control.Lens.Operators ((^.))
+import Control.Monad.IO.Class (MonadIO(..))
 
+import Data.IORef
 import qualified Data.Text as T
 import Language.Javascript.JSaddle
 import Test.Hspec
@@ -87,3 +89,12 @@ spec = do
   describe "nullObject" $ do
     it "is equal to null" $
       resultShouldBe "true" $ strictEqual nullObject (eval "null")
+
+  describe "function" $ do
+    it "creates a sync function" $
+      resultShouldBe "callback ran" $ do
+        ref <- liftIO $ newIORef ""
+        Function _ f <- function $ \_ _ _ -> do
+          liftIO $ writeIORef ref "callback ran"
+        call f f ()
+        liftIO $ readIORef ref
