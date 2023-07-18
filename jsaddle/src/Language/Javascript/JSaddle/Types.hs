@@ -204,7 +204,7 @@ data JSContextRef = JSContextRef
   , _jsContextRef_nextGetJsonReqId :: !(TVar GetJsonReqId)
   , _jsContextRef_getJsonReqs :: !(TVar (Map GetJsonReqId (MVar A.Value))) -- ^ The GetJson requests that are currently in-flight
   , _jsContextRef_nextCallbackId :: !(TVar CallbackId)
-  , _jsContextRef_callbacks :: !(TVar (Map CallbackId (JSVal -> [JSVal] -> JSM JSVal)))
+  , _jsContextRef_callbacks :: !(TVar (Map CallbackId (JSVal -> JSVal -> [JSVal] -> JSM JSVal)))
   , _jsContextRef_pendingResults :: !(TVar (Map RefId (MVar (PrimVal ()))))
   , _jsContextRef_nextTryId :: !(TVar TryId)
   , _jsContextRef_tries :: !(TVar (Map TryId (MVar (Either JSVal ()))))
@@ -538,7 +538,7 @@ instance (FromJSON input, FromJSON output) => FromJSON (Req input output) where
 data Rsp
    = Rsp_GetJson GetJsonReqId A.Value
    | Rsp_Result RefId (PrimVal ())
-   | Rsp_CallAsync CallbackId ValId [ValId]
+   | Rsp_CallAsync CallbackId ValId ValId [ValId]
    --TODO: When an exception is thrown, make sure we stop waiting for any results from them; otherwise, the datastructures waiting for those results will leak
    | Rsp_FinishTry TryId (Either ValId ()) -- Left if an exception was thrown; Right if not
    | Rsp_Sync SyncReqId
@@ -551,7 +551,7 @@ instance FromJSON Rsp where
   parseJSON = A.genericParseJSON $ aesonOptions "Rsp"
 
 data SyncCommand
-   = SyncCommand_StartCallback Bool CallbackId ValId [ValId]
+   = SyncCommand_StartCallback Bool CallbackId ValId ValId [ValId]
    -- ^ Bool indicates if the request queue is empty when the StartCallback happened
    -- The input valIds here must always be allocated on the JS side
    -- TODO: Make sure throwing stuff works when it ends up skipping over our own call stack entries
@@ -619,7 +619,8 @@ newSyncCallback'' f = do
   callbackId <- newId _jsContextRef_nextCallbackId
   f' <- callbackToSyncFunction callbackId --TODO: "ContinueAsync" behavior
   callbacks <- JSM $ asks _jsContextRef_callbacks
-  JSM $ liftIO $ atomically $ modifyTVar' callbacks $ M.insertWith (error "newSyncCallback: callbackId already exists") callbackId $ \this args -> f f' this args
+  -- The fObj below needs to be distinct from `f'` even though it refers to the same thing; otherwise, we will never free `f'`, which will result in a memory leak.
+  JSM $ liftIO $ atomically $ modifyTVar' callbacks $ M.insertWith (error "newSyncCallback: callbackId already exists") callbackId $ \fObj this args -> f fObj this args
   return (callbackId, f')
 
 newAsyncCallback' :: JSCallAsFunction -> JSM (CallbackId, JSVal)
@@ -627,7 +628,7 @@ newAsyncCallback' f = do
   callbackId <- newId _jsContextRef_nextCallbackId
   f' <- callbackToAsyncFunction callbackId --TODO: "ContinueAsync" behavior
   callbacks <- JSM $ asks _jsContextRef_callbacks
-  JSM $ liftIO $ atomically $ modifyTVar' callbacks $ M.insertWith (error "newAsyncCallback: callbackId already exists") callbackId $ \this args -> f f' this args >> pure this -- The return value is not relevant for async callback
+  JSM $ liftIO $ atomically $ modifyTVar' callbacks $ M.insertWith (error "newAsyncCallback: callbackId already exists") callbackId $ \fObj this args -> f fObj this args >> pure this -- The return value is not relevant for async callback
   return (callbackId, f')
 
 freeSyncCallback :: CallbackId -> JSM ()

@@ -223,12 +223,12 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
             return mResultVar
           forM_ mResultVar $ \resultVar -> do
             putMVar resultVar primVal
-        Rsp_CallAsync callbackId this args -> do
+        Rsp_CallAsync callbackId fObj this args -> do
           mCallback <- fmap (M.lookup callbackId) $ atomically $ readTVar callbacks
           case mCallback of
             Just callback -> do
               _ <- forkIO $ void $ flip runJSM env $ do
-                _ <- join $ callback <$> wrapJSVal this <*> traverse wrapJSVal args
+                _ <- join $ callback <$> wrapJSVal fObj <*> wrapJSVal this <*> traverse wrapJSVal args
                 return ()
               return ()
             Nothing -> error $ "callback " <> show callbackId <> " called, but does not exist"
@@ -287,10 +287,10 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
         , _jsContextRef_waitForResults = Nothing
         }
       processSyncCommand = \case
-        SyncCommand_StartCallback reqQueueEmpty callbackId this args -> do
+        SyncCommand_StartCallback reqQueueEmpty callbackId fObj this args -> do
           mCallback <- fmap (M.lookup callbackId) $ atomically $ readTVar callbacks
           case mCallback of
-            Just (callback :: JSVal -> [JSVal] -> JSM JSVal) -> do
+            Just (callback :: JSVal -> JSVal -> [JSVal] -> JSM JSVal) -> do
               reqs <- tryEnterSyncFrame $ \myDepth tryIdMVar -> do
                 threadId <- myThreadId
                 syncStateLocal <- newMVar SyncState_InSync
@@ -303,7 +303,7 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
                                   , _jsContextRef_syncState = syncStateLocal }
                     run = do
                       JSM $ asks _jsContextRef_myTryId >>= liftIO . putMVar tryIdMVar
-                      (Right <$>) $ join $ callback <$> wrapJSVal this <*> traverse wrapJSVal args
+                      (Right <$>) $ join $ callback <$> wrapJSVal fObj <*> wrapJSVal this <*> traverse wrapJSVal args
                 try $ flip runReaderT syncEnv $ unJSM $
                   run `catchError` (\e -> do
                     exceptionStr <- T.unpack <$> valToText (unJavaScriptException e)

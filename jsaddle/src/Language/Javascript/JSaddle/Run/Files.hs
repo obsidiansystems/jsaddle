@@ -228,7 +228,7 @@ jsaddleCoreJs = "\
     \      processSingleReq(syncReq.contents);\n\
     \    }\n\
     \  };\n\
-    \  var runSyncCallback = function(callback, that, args) {\n\
+    \  var runSyncCallback = function(callback, callbackObj, that, args) {\n\
     \    // Make sure all pending responses are sent\n\
     \    doSendRsp();\n\
     \    syncDepth++;\n\
@@ -237,6 +237,7 @@ jsaddleCoreJs = "\
     \      'contents': [\n\
     \        syncRequests.isEmpty(),\n\
     \        callback,\n\
+    \        callbackObj,\n\
     \        that,\n\
     \        args\n\
     \      ]\n\
@@ -299,6 +300,27 @@ jsaddleCoreJs = "\
     \      }\n\
     \    }\n\
     \  };\n\
+    \  var newSyncCallback = function(callbackId) {\n\
+    \    var callback = function() {\n\
+    \      return runSyncCallback(callbackId, wrapVal(callback), wrapVal(this), Array.prototype.slice.call(arguments).map(wrapVal));\n\
+    \    };\n\
+    \    callback.displayName = 'callback' + callbackId;\n\
+    \    return callback;\n\
+    \  };\n\
+    \  var newAsyncCallback = function(callbackId) {\n\
+    \    var callback = function() {\n\
+    \      appendRsp({\n\
+    \        'tag': 'CallAsync',\n\
+    \        'contents': [\n\
+    \          callbackId,\n\
+    \          wrapVal(callback),\n\
+    \          wrapVal(this),\n\
+    \          Array.prototype.slice.call(arguments).map(wrapVal)\n\
+    \        ]\n\
+    \      });\n\
+    \    };\n\
+    \    return callback;\n\
+    \  };\n\
     \  var deadTries = new Map();\n\
     \  var processSingleReq = function(tryReq) {\n\
     \    // Ignore requests in dead tries\n\
@@ -330,25 +352,13 @@ jsaddleCoreJs = "\
     \        });\n\
     \        break;\n\
     \      case 'SyncBlock':\n\
-    \        runSyncCallback(req.contents[0], [], []);\n\
+    \        runSyncCallback(req.contents[0], {}, [], []);\n\
     \        break;\n\
     \      case 'NewSyncCallback':\n\
-    \        result(req.contents[1], function() {\n\
-    \          return runSyncCallback(req.contents[0], wrapVal(this), Array.prototype.slice.call(arguments).map(wrapVal));\n\
-    \        });\n\
+    \        result(req.contents[1], newSyncCallback(req.contents[0]));\n\
     \        break;\n\
     \      case 'NewAsyncCallback':\n\
-    \        var callbackId = req.contents[0];\n\
-    \        result(req.contents[1], function() {\n\
-    \          appendRsp({\n\
-    \            'tag': 'CallAsync',\n\
-    \            'contents': [\n\
-    \              callbackId,\n\
-    \              wrapVal(this),\n\
-    \              Array.prototype.slice.call(arguments).map(wrapVal)\n\
-    \            ]\n\
-    \          });\n\
-    \        });\n\
+    \        result(req.contents[1], newAsyncCallback(req.contents[0]));\n\
     \        break;\n\
     \      case 'SetProperty':\n\
     \        unwrapVal(req.contents[2])[unwrapVal(req.contents[0])] = unwrapVal(req.contents[1]);\n\
