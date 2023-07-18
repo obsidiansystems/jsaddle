@@ -98,3 +98,10 @@ spec = do
           liftIO $ writeIORef ref "callback ran"
         call f f ()
         liftIO $ readIORef ref
+
+  describe "function'" $ do
+    it "creates a sync function, which returns a value" $
+      resultShouldBe "callback ran" $ do
+        Function' _ f <- function' $ \_ _ _ -> do
+          toJSVal "callback ran"
+        call f f ()
