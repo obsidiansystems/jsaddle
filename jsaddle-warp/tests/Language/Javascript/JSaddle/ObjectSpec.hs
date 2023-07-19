@@ -7,7 +7,11 @@ import Control.Monad.IO.Class (MonadIO(..))
 import Control.Concurrent
 
 import Data.IORef
+import Data.Maybe
 import qualified Data.Text as T
+import System.Mem
+import System.Mem.Weak
+
 import Language.Javascript.JSaddle
 import Test.Hspec
 
@@ -115,3 +119,30 @@ spec = do
           liftIO $ putMVar mVar "callback ran"
         call f f ()
         liftIO $ takeMVar mVar
+
+  describe "freeFunction" $ do
+    it "Frees up Function" $
+      resultShouldBe "True" $ do
+        ref <- liftIO $ newIORef ""
+        weakVal <- liftIO $ mkWeakIORef ref (pure ())
+        f <- function $ \_ _ _ -> do
+          liftIO $ writeIORef ref "callback ran"
+        freeFunction f
+        v <- liftIO $ do
+          performGC
+          deRefWeak weakVal
+        pure $ T.pack $ show $ isNothing v
+
+  describe "freeFunction'" $ do
+    it "Frees up Function'" $
+      resultShouldBe "True" $ do
+        ref <- liftIO $ newIORef ""
+        weakVal <- liftIO $ mkWeakIORef ref (pure ())
+        f <- function' $ \_ _ _ -> do
+          liftIO $ writeIORef ref "callback ran"
+          toJSVal "callback ran"
+        freeFunction' f
+        v <- liftIO $ do
+          performGC
+          deRefWeak weakVal
+        pure $ T.pack $ show $ isNothing v
