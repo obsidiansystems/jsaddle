@@ -7,6 +7,7 @@ import qualified Data.Text as T
 import Language.Javascript.JSaddle
 
 import qualified Language.Javascript.JSaddle.ObjectSpec as ObjectSpec
+import qualified Language.Javascript.JSaddle.RunSpec as RunSpec
 import qualified Language.Javascript.JSaddle.ValueSpec as ValueSpec
 
 import Test.Hspec
@@ -16,6 +17,7 @@ spec = do
   describe "Miscellaneous" misc
   describe "ObjectSpec" ObjectSpec.spec
   describe "ValueSpec" ValueSpec.spec
+  describe "RunSpec" RunSpec.spec
 
 misc :: SpecWith JSContextRef
 misc = do
