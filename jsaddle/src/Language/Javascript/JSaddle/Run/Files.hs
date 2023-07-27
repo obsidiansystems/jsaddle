@@ -306,21 +306,21 @@ jsaddleCoreJs = "\
     \      'contents': callbackId\n\
     \    });\n\
     \  });\n\
-    \  var newSyncCallback = function(callbackId) {\n\
+    \  var newSyncCallback = function(callbackId, callbackObjRef) {\n\
     \    var callback = function() {\n\
-    \      return runSyncCallback(callbackId, wrapVal(callback), wrapVal(this), Array.prototype.slice.call(arguments).map(wrapVal));\n\
+    \      return runSyncCallback(callbackId, callbackObjRef, wrapVal(this), Array.prototype.slice.call(arguments).map(wrapVal));\n\
     \    };\n\
     \    callback.displayName = 'callback' + callbackId;\n\
     \    callbackRegistry.register(callback, callbackId);\n\
     \    return callback;\n\
     \  };\n\
-    \  var newAsyncCallback = function(callbackId) {\n\
+    \  var newAsyncCallback = function(callbackId, callbackObjRef) {\n\
     \    var callback = function() {\n\
     \      appendRsp({\n\
     \        'tag': 'CallAsync',\n\
     \        'contents': [\n\
     \          callbackId,\n\
-    \          wrapVal(callback),\n\
+    \          callbackObjRef,\n\
     \          wrapVal(this),\n\
     \          Array.prototype.slice.call(arguments).map(wrapVal)\n\
     \        ]\n\
@@ -363,10 +363,10 @@ jsaddleCoreJs = "\
     \        runSyncCallback(req.contents[0], {}, [], []);\n\
     \        break;\n\
     \      case 'NewSyncCallback':\n\
-    \        result(req.contents[1], newSyncCallback(req.contents[0]));\n\
+    \        result(req.contents[1], newSyncCallback(req.contents[0], req.contents[1]));\n\
     \        break;\n\
     \      case 'NewAsyncCallback':\n\
-    \        result(req.contents[1], newAsyncCallback(req.contents[0]));\n\
+    \        result(req.contents[1], newAsyncCallback(req.contents[0], req.contents[1]));\n\
     \        break;\n\
     \      case 'SetProperty':\n\
     \        unwrapVal(req.contents[2])[unwrapVal(req.contents[0])] = unwrapVal(req.contents[1]);\n\
