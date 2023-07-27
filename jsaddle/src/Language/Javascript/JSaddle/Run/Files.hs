@@ -315,7 +315,7 @@ jsaddleCoreJs = "\
     \      var req = tryReq.req;\n\
     \      switch(req.tag) {\n\
     \      case 'FreeRef':\n\
-    \        vals.delete(req.contents[0]);\n\
+    \        vals.delete(req.contents);\n\
     \        break;\n\
     \      case 'NewJson':\n\
     \        result(req.contents[1], req.contents[0]);\n\
