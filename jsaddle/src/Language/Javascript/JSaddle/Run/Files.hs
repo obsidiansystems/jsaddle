@@ -249,7 +249,11 @@ jsaddleCoreJs = "\
     \        var tuple = newReqs.shift();\n\
     \        syncRequests.enqueueArray(newReqs);\n\
     \        syncDepth--;\n\
-    \        throw tuple[1].contents[1];\n\
+    \        if (tuple[1].contents[1].Left) {\n\
+    \          throw tuple[1].contents[1].Left;\n\
+    \        } else {\n\
+    \          throw unwrapVal(tuple[1].contents[1].Right);\n\
+    \        }\n\
     \      } else {\n\
     \        syncRequests.enqueueArray(newReqs);\n\
     \      }\n\
