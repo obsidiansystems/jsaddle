@@ -21,6 +21,11 @@ spec = do
 
 misc :: SpecWith JSContextRef
 misc = do
+  let
+    resultShouldBe res m ctx = do
+      result <- runJSM (valToText =<< m) ctx
+      result `shouldBe` (T.pack res)
+
   describe "Bugs" $ do
     it "does not get deadlocked when making use of JSVal just created" $ \ctx -> do
       result <- flip runJSM ctx $ do
@@ -45,3 +50,65 @@ misc = do
       -- Make sure we construct the array containing the specified number
       result <- flip runJSM ctx $ valToText =<< (array [5::Int] !! 0)
       result `shouldBe` (T.pack "5")
+
+  describe "Sync callbacks" $ do
+    it "should block" $
+      resultShouldBe "1" $ do
+        o <- create
+        let k = "k" :: String
+        (o <# k) (0 :: Int)
+        Function _ f1 <- function $ \_ _ _ -> do
+          (o <# k) (1 :: Int)
+          pure ()
+        call f1 f1 ()
+        o ! k
+
+    it "should block when nested" $
+      resultShouldBe "2" $ do
+        o <- create
+        let k = "k" :: String
+        (o <# k) (0 :: Int)
+        Function _ f1 <- function $ \_ _ _ -> do
+          (o <# k) (1 :: Int)
+          pure ()
+        Function _ f2 <- function $ \_ _ _ -> do
+          call f1 f1 ()
+          (o <# k) (2 :: Int)
+          pure ()
+        call f2 f2 ()
+        o ! k
+
+    it "should block when nested 2" $
+      resultShouldBe "1" $ do
+        o <- create
+        let k = "k" :: String
+        v <- toJSVal (0 :: Int)
+        (o <# k) v
+        Function _ f1 <- function $ \_ _ _ -> do
+          (o <# k) (1 :: Int)
+          pure ()
+        Function _ f2 <- function $ \_ _ _ -> do
+          call f1 f1 ()
+          pure ()
+        call f2 f2 ()
+        o ! k
+
+    it "can be run sequentially in a single call" $
+      resultShouldBe "2" $ do
+        o <- create
+        let k = "k" :: String
+        (o <# k) (0 :: Int)
+        Function _ f1 <- function $ \_ _ _ -> do
+          (o <# k) (1 :: Int)
+          pure ()
+        Function _ f2 <- function $ \_ _ _ -> do
+          (o <# k) (2 :: Int)
+          pure ()
+        let
+          jsApi = "(function(f1, f2) {\
+                  \  f1();\
+                  \  f2();\
+                  \})"
+        api <- eval jsApi
+        call api o [f1, f2]
+        o ! k
