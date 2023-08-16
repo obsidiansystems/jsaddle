@@ -214,7 +214,7 @@ jsaddleCoreJs = "\
     \    }\n\
     \    return syncRequests.dequeue();\n\
     \  };\n\
-    \  var syncDepth = 0;\n\
+    \  var syncCallbackLvl = 0;\n\
     \  var processAllEnqueuedReqs = function() {\n\
     \    while(!syncRequests.isEmpty()) {\n\
     \      var tuple = syncRequests.dequeue();\n\
@@ -222,7 +222,7 @@ jsaddleCoreJs = "\
     \      if(syncReq.tag !== 'Req') {\n\
     \        throw \"processAllEnqueuedReqs: syncReq is not SyncBlockReq_Req; this should never happen because Result/Throw should only be sent while a synchronous request is still in progress\";\n\
     \      }\n\
-    \      if (tuple[0] > syncDepth) {\n\
+    \      if (tuple[0] > syncCallbackLvl) {\n\
     \        throw \"processAllEnqueuedReqs: queue contains a request for a frame which has exited\";\n\
     \      }\n\
     \      processSingleReq(syncReq.contents);\n\
@@ -231,7 +231,7 @@ jsaddleCoreJs = "\
     \  var runSyncCallback = function(callback, callbackObj, that, args) {\n\
     \    // Make sure all pending responses are sent\n\
     \    doSendRsp();\n\
-    \    syncDepth++;\n\
+    \    syncCallbackLvl++;\n\
     \    var newReqs = processSyncCommand({\n\
     \      'tag': 'StartCallback',\n\
     \      'contents': [\n\
@@ -243,12 +243,12 @@ jsaddleCoreJs = "\
     \      ]\n\
     \    });\n\
     \    if (newReqs.length > 0) {\n\
-    \      if ((newReqs[0][1].tag === 'Throw') && (newReqs[0][0] === syncDepth)) {\n\
+    \      if ((newReqs[0][1].tag === 'Throw') && (newReqs[0][0] === syncCallbackLvl)) {\n\
     \        // If we receive the first request as Throw, it means that StartCallback did not happen\n\
     \        // So throw immediately\n\
     \        var tuple = newReqs.shift();\n\
     \        syncRequests.enqueueArray(newReqs);\n\
-    \        syncDepth--;\n\
+    \        syncCallbackLvl--;\n\
     \        if (tuple[1].contents[1].Left) {\n\
     \          throw tuple[1].contents[1].Left;\n\
     \        } else {\n\
@@ -266,8 +266,8 @@ jsaddleCoreJs = "\
     \        processSingleReq(syncReq.contents);\n\
     \        break;\n\
     \      case 'Result':\n\
-    \        syncDepth--;\n\
-    \        if(syncDepth === 0 && !syncRequests.isEmpty()) {\n\
+    \        syncCallbackLvl--;\n\
+    \        if(syncCallbackLvl === 0 && !syncRequests.isEmpty()) {\n\
     \          // Ensure that all remaining sync requests are cleared out in a timely\n\
     \          // fashion.  Any incoming websocket requests will also run\n\
     \          // processAllEnqueuedReqs, but it could potentially be an unlimited\n\
@@ -281,19 +281,19 @@ jsaddleCoreJs = "\
     \        return unwrapVal(syncReq.contents);\n\
     \      case 'Throw':\n\
     \        // Ensure we are throwing at the right depth\n\
-    \        if (syncDepth !== syncReq.contents[0]) {\n\
-    \          console.error(\"Received throw for wrong syncDepth: \", syncDepth, syncReq.contents[0]);\n\
+    \        if (syncCallbackLvl !== syncReq.contents[0]) {\n\
+    \          console.error(\"Received throw for wrong syncCallbackLvl: \", syncCallbackLvl, syncReq.contents[0]);\n\
     \          continue;\n\
     \        };\n\
     \        var validReqs = [];\n\
     \        while (!syncRequests.isEmpty()) {\n\
     \          var tuple = syncRequests.dequeue();\n\
-    \          if (tuple[0] !== syncDepth) {\n\
+    \          if (tuple[0] !== syncCallbackLvl) {\n\
     \            validReqs.push(tuple);\n\
     \          }\n\
     \        }\n\
     \        syncRequests.enqueueArray(validReqs);\n\
-    \        syncDepth--;\n\
+    \        syncCallbackLvl--;\n\
     \        if (syncReq.contents[1].Left) {\n\
     \          throw syncReq.contents[1].Left;\n\
     \        } else {\n\
