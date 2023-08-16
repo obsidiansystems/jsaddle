@@ -202,102 +202,59 @@ jsaddleCoreJs = "\
     \      ]\n\
     \    });\n\
     \  };\n\
-    \  var syncRequests = new Queue();\n\
+    \  var syncCallbackLvl = 0;\n\
+    \  var syncCallbackReqs = new Map();\n\
+    \  var enqueueSyncCallbackReqs = function(allReqs) {\n\
+    \    // allReqs :: [(SyncCallbackLvl, [SyncBlockReq])]\n\
+    \    for ([lvl, reqs] of allReqs) {\n\
+    \      syncCallbackReqs[lvl].enqueueArray(reqs);\n\
+    \    };\n\
+    \  };\n\
     \  var getNextSyncRequest = function() {\n\
-    \    if(syncRequests.isEmpty()) {\n\
+    \    if(syncCallbackReqs[syncCallbackLvl].isEmpty()) {\n\
     \      // Make sure all pending responses are sent\n\
     \      doSendRsp();\n\
-    \      syncRequests.enqueueArray(processSyncCommand({\n\
+    \      enqueueSyncCallbackReqs(processSyncCommand({\n\
     \        'tag': 'Continue',\n\
     \        'contents': []\n\
     \      }));\n\
     \    }\n\
-    \    return syncRequests.dequeue();\n\
-    \  };\n\
-    \  var syncCallbackLvl = 0;\n\
-    \  var processAllEnqueuedReqs = function() {\n\
-    \    while(!syncRequests.isEmpty()) {\n\
-    \      var tuple = syncRequests.dequeue();\n\
-    \      var syncReq = tuple[1];\n\
-    \      if(syncReq.tag !== 'Req') {\n\
-    \        throw \"processAllEnqueuedReqs: syncReq is not SyncBlockReq_Req; this should never happen because Result/Throw should only be sent while a synchronous request is still in progress\";\n\
-    \      }\n\
-    \      if (tuple[0] > syncCallbackLvl) {\n\
-    \        throw \"processAllEnqueuedReqs: queue contains a request for a frame which has exited\";\n\
-    \      }\n\
-    \      processSingleReq(syncReq.contents);\n\
-    \    }\n\
+    \    return syncCallbackReqs[syncCallbackLvl].dequeue();\n\
     \  };\n\
     \  var runSyncCallback = function(callback, callbackObj, that, args) {\n\
     \    // Make sure all pending responses are sent\n\
     \    doSendRsp();\n\
     \    syncCallbackLvl++;\n\
-    \    var newReqs = processSyncCommand({\n\
+    \    syncCallbackReqs[syncCallbackLvl] = new Queue();\n\
+    \    enqueueSyncCallbackReqs(processSyncCommand({\n\
     \      'tag': 'StartCallback',\n\
     \      'contents': [\n\
-    \        syncRequests.isEmpty(),\n\
+    \        syncCallbackLvl,\n\
     \        callback,\n\
     \        callbackObj,\n\
     \        that,\n\
     \        args\n\
     \      ]\n\
-    \    });\n\
-    \    if (newReqs.length > 0) {\n\
-    \      if ((newReqs[0][1].tag === 'Throw') && (newReqs[0][0] === syncCallbackLvl)) {\n\
-    \        // If we receive the first request as Throw, it means that StartCallback did not happen\n\
-    \        // So throw immediately\n\
-    \        var tuple = newReqs.shift();\n\
-    \        syncRequests.enqueueArray(newReqs);\n\
-    \        syncCallbackLvl--;\n\
-    \        if (tuple[1].contents[1].Left) {\n\
-    \          throw tuple[1].contents[1].Left;\n\
-    \        } else {\n\
-    \          throw unwrapVal(tuple[1].contents[1].Right);\n\
-    \        }\n\
-    \      } else {\n\
-    \        syncRequests.enqueueArray(newReqs);\n\
-    \      }\n\
-    \    }\n\
+    \    }));\n\
     \    while(true) {\n\
-    \      var tuple = getNextSyncRequest();\n\
-    \      var syncReq = tuple[1];\n\
+    \      var syncReq = getNextSyncRequest();\n\
     \      switch (syncReq.tag) {\n\
     \      case 'Req':\n\
     \        processSingleReq(syncReq.contents);\n\
     \        break;\n\
     \      case 'Result':\n\
-    \        syncCallbackLvl--;\n\
-    \        if(syncCallbackLvl === 0 && !syncRequests.isEmpty()) {\n\
-    \          // Ensure that all remaining sync requests are cleared out in a timely\n\
-    \          // fashion.  Any incoming websocket requests will also run\n\
-    \          // processAllEnqueuedReqs, but it could potentially be an unlimited\n\
-    \          // amount of time before the next websocket request comes in.  We\n\
-    \          // can't process this synchronously because we need to return right\n\
-    \          // now - it's possible the next item in the queue will make use of\n\
-    \          // something we were supposed to produce, so if we run that without\n\
-    \          // returning first, it won't be available\n\
-    \          setTimeout(processAllEnqueuedReqs, 0);\n\
+    \        if(!syncCallbackReqs[syncCallbackLvl].isEmpty()) {\n\
+    \          console.log('runSyncCallback: Pending requests present after Result received')\n\
     \        }\n\
+    \        syncCallbackLvl--;\n\
     \        return unwrapVal(syncReq.contents);\n\
     \      case 'Throw':\n\
-    \        // Ensure we are throwing at the right depth\n\
-    \        if (syncCallbackLvl !== syncReq.contents[0]) {\n\
-    \          console.error(\"Received throw for wrong syncCallbackLvl: \", syncCallbackLvl, syncReq.contents[0]);\n\
-    \          continue;\n\
-    \        };\n\
-    \        var validReqs = [];\n\
-    \        while (!syncRequests.isEmpty()) {\n\
-    \          var tuple = syncRequests.dequeue();\n\
-    \          if (tuple[0] !== syncCallbackLvl) {\n\
-    \            validReqs.push(tuple);\n\
-    \          }\n\
-    \        }\n\
-    \        syncRequests.enqueueArray(validReqs);\n\
+    \        syncCallbackReqs.delete(syncCallbackLvl)\n\
     \        syncCallbackLvl--;\n\
-    \        if (syncReq.contents[1].Left) {\n\
-    \          throw syncReq.contents[1].Left;\n\
+    \        if (syncReq.contents.Left) {\n\
+    \          throw syncReq.contents.Left;\n\
     \        } else {\n\
-    \          throw unwrapVal(syncReq.contents[1].Right);\n\
+    \          throw unwrapVal(syncReq.contents.Right);\n\
     \        }\n\
     \      default:\n\
     \        throw 'runSyncCallback: unknown request tag ' + JSON.stringify(syncReq.tag);\n\
@@ -416,13 +373,9 @@ jsaddleCoreJs = "\
     \      });\n\
     \    }\n\
     \  };\n\
-    \  var processReq = function(req) {\n\
-    \    processAllEnqueuedReqs();\n\
-    \    processSingleReq(req);\n\
-    \  };\n\
     \  return {\n\
-    \    processReq: processReq,\n\
-    \    processReqs: function(reqs) { for (req of reqs) { processReq(req);}}\n\
+    \    processReq: processSingleReq,\n\
+    \    processReqs: function(reqs) { for (req of reqs) { processSingleReq(req);}}\n\
     \  };\n\
     \}\n\
     \"

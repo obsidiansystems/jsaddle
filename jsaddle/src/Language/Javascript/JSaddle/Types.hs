@@ -91,6 +91,7 @@ module Language.Javascript.JSaddle.Types (
   , CallbackId (..)
   , GetJsonReqId (..)
   , SyncReqId (..)
+  , SyncCallbackLvl (..)
   , TryId (..)
   , PrimVal (..)
   , TryReq (..)
@@ -477,6 +478,8 @@ newtype TryId = TryId { unTryId :: Int64 } deriving (Show, Read, Eq, Ord, Enum, 
 
 newtype SyncReqId = SyncReqId { unSyncReqId :: Int64 } deriving (Show, Read, Eq, Ord, Enum, ToJSON, FromJSON, Generic)
 
+newtype SyncCallbackLvl = SyncCallbackLvl { unSyncCallbackLvl :: Int32 } deriving (Show, Read, Eq, Ord, Enum, ToJSON, FromJSON, Generic)
+
 instance NFData GetJsonReqId
 instance NFData CallbackId
 instance NFData TryId
@@ -552,7 +555,7 @@ instance FromJSON Rsp where
   parseJSON = A.genericParseJSON $ aesonOptions "Rsp"
 
 data SyncCommand
-   = SyncCommand_StartCallback Bool CallbackId ValId ValId [ValId]
+   = SyncCommand_StartCallback SyncCallbackLvl CallbackId ValId ValId [ValId]
    -- ^ Bool indicates if the request queue is empty when the StartCallback happened
    -- The input valIds here must always be allocated on the JS side
    -- TODO: Make sure throwing stuff works when it ends up skipping over our own call stack entries
@@ -568,7 +571,7 @@ instance FromJSON SyncCommand where
 data SyncBlockReq
   = SyncBlockReq_Req TryReq
   | SyncBlockReq_Result ValId
-  | SyncBlockReq_Throw Int (Either Text ValId) -- ^ Int is the frame depth which should receive throw
+  | SyncBlockReq_Throw (Either Text ValId)
    deriving (Generic)
 
 instance ToJSON SyncBlockReq where
