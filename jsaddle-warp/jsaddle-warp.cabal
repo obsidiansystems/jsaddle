@@ -112,6 +112,7 @@ test-suite spec
       base
     , bytestring
     , directory
+    , exceptions
     , hspec == 2.*
     , jsaddle
     , jsaddle-warp
