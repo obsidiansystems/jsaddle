@@ -89,6 +89,7 @@ module Language.Javascript.JSaddle.Types (
   , SyncCommand (..)
   , SyncBlockReq (..)
   , CallbackId (..)
+  , Callback (..)
   , GetJsonReqId (..)
   , SyncReqId (..)
   , SyncCallbackLvl (..)
@@ -161,6 +162,7 @@ import Data.Typeable (Typeable)
 import Data.Coerce (coerce, Coercible)
 import Data.Aeson (ToJSON(..), FromJSON(..))
 import GHC.Generics (Generic)
+import GHC.Stack
 import Data.Int
 import qualified Data.Aeson as A
 import qualified Data.Aeson.TH as A
@@ -180,6 +182,7 @@ import Control.Monad.Primitive
 import Control.Monad.IO.Unlift (MonadUnliftIO(..))
 import qualified Control.Monad.Fail as Fail
 import System.Mem.Weak (Weak, deRefWeak, mkWeakPtr)
+import Foreign.Ptr
 #endif
 
 #if MIN_VERSION_base(4,9,0) && defined(CHECK_UNCHECKED)
@@ -205,7 +208,7 @@ data JSContextRef = JSContextRef
   , _jsContextRef_nextGetJsonReqId :: !(TVar GetJsonReqId)
   , _jsContextRef_getJsonReqs :: !(TVar (Map GetJsonReqId (MVar A.Value))) -- ^ The GetJson requests that are currently in-flight
   , _jsContextRef_nextCallbackId :: !(TVar CallbackId)
-  , _jsContextRef_callbacks :: !(TVar (Map CallbackId (JSVal -> JSVal -> [JSVal] -> JSM JSVal)))
+  , _jsContextRef_callbacks :: !(TVar (Map CallbackId Callback))
   , _jsContextRef_pendingResults :: !(TVar (Map RefId (MVar (PrimVal ()))))
   , _jsContextRef_nextTryId :: !(TVar TryId)
   , _jsContextRef_tries :: !(TVar (Map TryId (MVar (Either JSVal ()))))
@@ -215,6 +218,11 @@ data JSContextRef = JSContextRef
   , _jsContextRef_syncReqs :: !(TVar (Map SyncReqId (MVar ())))
   -- When executing in a sync frame, wait for results of these
   , _jsContextRef_waitForResults :: !(Maybe (TVar [Weak JSVal]))
+  }
+
+data Callback = Callback
+  { _callback_value :: JSVal -> JSVal -> [JSVal] -> JSM JSVal
+  , _callback_createdAt :: Ptr CostCentreStack
   }
 #endif
 
@@ -624,15 +632,28 @@ newSyncCallback'' f = do
   f' <- callbackToSyncFunction callbackId --TODO: "ContinueAsync" behavior
   callbacks <- JSM $ asks _jsContextRef_callbacks
   -- The fObj below needs to be distinct from `f'` even though it refers to the same thing; otherwise, we will never free `f'`, which will result in a memory leak.
-  JSM $ liftIO $ atomically $ modifyTVar' callbacks $ M.insertWith (error "newSyncCallback: callbackId already exists") callbackId $ \fObj this args -> f fObj this args
+  JSM $ liftIO $ do
+    ccs <- getCurrentCCS f
+    atomically $ modifyTVar' callbacks $ M.insertWith (error "newSyncCallback: callbackId already exists") callbackId $ Callback
+      { _callback_value = \fObj this args -> f fObj this args
+      , _callback_createdAt = ccs
+      }
   return (callbackId, f')
 
-newAsyncCallback' :: JSCallAsFunction -> JSM (CallbackId, JSVal)
+newAsyncCallback'
+  :: HasCallStack
+  => JSCallAsFunction
+  -> JSM (CallbackId, JSVal)
 newAsyncCallback' f = do
   callbackId <- newId _jsContextRef_nextCallbackId
   f' <- callbackToAsyncFunction callbackId --TODO: "ContinueAsync" behavior
   callbacks <- JSM $ asks _jsContextRef_callbacks
-  JSM $ liftIO $ atomically $ modifyTVar' callbacks $ M.insertWith (error "newAsyncCallback: callbackId already exists") callbackId $ \fObj this args -> f fObj this args >> pure this -- The return value is not relevant for async callback
+  JSM $ liftIO $ do
+    ccs <- getCurrentCCS f
+    atomically $ modifyTVar' callbacks $ M.insertWith (error "newAsyncCallback: callbackId already exists") callbackId $ Callback
+      { _callback_value = \fObj this args -> f fObj this args >> pure this -- The return value is not relevant for async callback
+      , _callback_createdAt = ccs
+      }
   return (callbackId, f')
 
 freeSyncCallback :: CallbackId -> JSM ()

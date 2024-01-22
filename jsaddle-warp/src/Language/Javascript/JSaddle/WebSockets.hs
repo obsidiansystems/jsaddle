@@ -57,10 +57,13 @@ import Data.IORef
        (readIORef, newIORef, atomicModifyIORef')
 import Data.ByteString.Lazy (ByteString)
 import qualified Data.ByteString.Lazy as LBS (stripPrefix)
+import qualified Data.ByteString.Lazy.Char8 as LBSC8 (uncons)
 import Language.Javascript.JSaddle (runJSM)
 import qualified Data.Map as Map
 import System.Entropy (getEntropy)
 import Control.Exception (try, SomeException (..))
+import qualified Data.Sequence as Seq
+import Data.Foldable (toList)
 
 --TODO: stylish-haskell
 
@@ -80,16 +83,32 @@ jsaddleOr opts entryPoint otherApp = do
               ( Map.insertWith (error $ "duplicate connection ID" <> show connId) connId processSyncCommand fs
               , ()
               )
-            _ <- forkIO . forever $
-                receiveDataMessage conn >>= \msg -> case getTextMessageByteString msg of
-                    Just t -> case decode t of
-                        Nothing -> putStrLn $ "jsaddle response decode failed: " <> show t
-                        Just r  -> do
-                          result <- try $ processResult r
-                          case result of
-                            Left e@(SomeException _) -> putStrLn $ "jsaddle processResult failed: " <> show e
-                            Right _ -> return ()
-                    _ -> error "jsaddle WebSocket unexpected binary data"
+            _ <- forkIO $ do
+              let loop accumulatedChunks = receiveDataMessage conn >>= \msg -> case getTextMessageByteString msg of
+                    Just wrappedChunk -> case LBSC8.uncons wrappedChunk of
+                      Nothing -> do
+                        putStrLn "error: jsaddle response: empty chunk from websocket is invalid"
+                        loop accumulatedChunks
+                      Just ('0', nonFinalChunk) -> do
+                        loop $ accumulatedChunks Seq.|> nonFinalChunk
+                      Just ('1', finalChunk) -> do
+                        let completeMessage = mconcat $ toList $ accumulatedChunks Seq.|> finalChunk
+                        case decode completeMessage of
+                          Nothing -> do
+                            putStrLn $ "error: jsaddle response decode failed: " <> show completeMessage
+                          Just r  -> do
+                            result <- try $ processResult r
+                            case result of
+                              Left e@(SomeException _) -> putStrLn $ "jsaddle processResult failed: " <> show e
+                              Right _ -> return ()
+                        loop mempty
+                      Just (_, _) -> do
+                        putStrLn $ "error: jsaddle response: invalid wrapped chunk: " <> show wrappedChunk
+                        loop accumulatedChunks
+                    Nothing -> do
+                      putStrLn "error: jsaddle WebSocket unexpected binary data"
+                      loop accumulatedChunks
+              loop mempty
             try (runJSM entryPoint env) >>= \case
               Left e@(SomeException _) -> putStrLn $ "done: left: " <> show e
               Right _ -> putStrLn $ "done: right"
@@ -205,9 +224,23 @@ jsaddleJs' jsaddleUri refreshOnLoad = jsaddleCoreJs <> "\
     \      xhr.send(JSON.stringify(v));\n\
     \      return JSON.parse(xhr.responseText);\n\
     \    };\n\
-    \    var core = jsaddleCoreJs(window, function(a) {\n\
-    \      ws.send(JSON.stringify(a));\n\
-    \    }, sync, 10 /* RESPONSE_BUFFER_MAX_SIZE (0 to disable) */);\n\
+    \    var chunkSubstr = function(str, size) {\n\
+    \      var numChunks = Math.ceil(str.length / size);\n\
+    \      var chunks = new Array(numChunks);\n\
+    \      for (let i = 0, o = 0; i < numChunks; ++i, o += size) {\n\
+    \        chunks[i] = str.substr(o, size)\n\
+    \      }\n\
+    \      return chunks;\n\
+    \    };\n\
+    \    var async = function(v) {\n\
+    \      // In Chrome, chunks over 128kb get blocked if you send them and then immediately enter a synchronous XHR (which we often do).  However, multiple smaller chunks do not.  So, we break up all sends into smaller chunks to avoid dealing with this.\n\
+    \      var chunks = chunkSubstr(JSON.stringify(v), 64*1024);\n\
+    \      for(var i = 0; i < chunks.length - 1; ++i) {\n\
+    \        ws.send('0' + chunks[i]);\n\
+    \      }\n\
+    \      ws.send('1' + chunks[chunks.length - 1]);\n\
+    \    };\n\
+    \    var core = jsaddleCoreJs(window, async, sync, 10 /* RESPONSE_BUFFER_MAX_SIZE (0 to disable) */);\n\
     \    var syncKey = \"\";\n\
     \\n\
     \    ws.onopen = function(e) {\n\

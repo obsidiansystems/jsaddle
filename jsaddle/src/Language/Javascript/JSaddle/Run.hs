@@ -70,6 +70,8 @@ import Language.Javascript.JSaddle.Value (valToText)
 import Data.Foldable (forM_, traverse_, foldl')
 import Language.Javascript.JSaddle.Monad (syncPoint)
 
+import GHC.Stack
+
 -- | The first dynamically-allocated RefId
 initialRefId :: RefId
 initialRefId = RefId 2
@@ -136,8 +138,11 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
           case mCallback of
             Just callback -> do
               _ <- forkIO $ void $ flip runJSM env $ do
-                _ <- join $ callback <$> wrapJSVal fObj <*> wrapJSVal this <*> traverse wrapJSVal args
-                return ()
+                tid <- liftIO myThreadId
+                stackInfo <- liftIO $ renderStack <$> ccsToStrings (_callback_createdAt callback)
+                liftIO $ putStrLn $ "Starting callback async on thread " <> show tid <> ":\n" <> stackInfo
+                _ <- join $ _callback_value callback <$> wrapJSVal fObj <*> wrapJSVal this <*> traverse wrapJSVal args
+                liftIO $ putStrLn $ "Finished callback async on thread " <> show tid <> ":\n" <> stackInfo
               return ()
             Nothing -> error $ "callback " <> show callbackId <> " called, but does not exist"
         Rsp_FreeCallback callbackId -> do
@@ -207,7 +212,7 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
         SyncCommand_StartCallback callbackLvl callbackId fObj this args -> do
           mCallback <- fmap (M.lookup callbackId) $ atomically $ readTVar callbacks
           case mCallback of
-            Just (callback :: JSVal -> JSVal -> [JSVal] -> JSM JSVal) -> do
+            Just callback -> do
               threadId <- myThreadId
               syncStateLocal <- newMVar SyncState_InSync
               let syncEnv = env { _jsContextRef_sendReq = \req -> do
@@ -218,8 +223,13 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
                                 , _jsContextRef_myThreadId = threadId
                                 , _jsContextRef_syncState = syncStateLocal }
                   run = do
-                    ((Right <$>) $ join $ callback <$> wrapJSVal fObj <*> wrapJSVal this <*> traverse wrapJSVal args)
+                    tid <- liftIO myThreadId
+                    stackInfo <- liftIO $ renderStack <$> ccsToStrings (_callback_createdAt callback)
+                    liftIO $ putStrLn $ "Starting callback sync on thread " <> show tid <> ":\n" <> stackInfo
+                    result <- ((Right <$>) $ join $ _callback_value callback <$> wrapJSVal fObj <*> wrapJSVal this <*> traverse wrapJSVal args)
                       `catchError` (return . Left)
+                    liftIO $ putStrLn $ "Finished callback sync on thread " <> show tid <> ":\n" <> stackInfo
+                    pure result
               forkIO $ do
                 cbResult :: CallbackResult <- try $ flip runReaderT syncEnv $ unJSM $ run
                 enqueueSyncBlockRequest callbackLvl =<< case cbResult of
