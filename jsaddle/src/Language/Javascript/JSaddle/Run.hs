@@ -116,7 +116,8 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
   pendingReqs <- newTVarIO []
   pendingReqsCount <- newTVarIO (0 :: Int)
   threadId <- myThreadId
-  let processRsp = traverse_ $ \case
+  let logCallbacks = False
+      processRsp = traverse_ $ \case
         Rsp_GetJson getJsonReqId val -> do
           reqs <- atomically $ do
             reqs <- readTVar getJsonReqs
@@ -139,10 +140,12 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
             Just callback -> do
               _ <- forkIO $ void $ flip runJSM env $ do
                 tid <- liftIO myThreadId
-                stackInfo <- liftIO $ renderStack <$> ccsToStrings (_callback_createdAt callback)
-                liftIO $ putStrLn $ "Starting callback async on thread " <> show tid <> ":\n" <> stackInfo
+                when logCallbacks $ do
+                  stackInfo <- liftIO $ renderStack <$> ccsToStrings (_callback_createdAt callback)
+                  liftIO $ putStrLn $ "Starting callback async on thread " <> show tid <> ":\n" <> stackInfo
                 _ <- join $ _callback_value callback <$> wrapJSVal fObj <*> wrapJSVal this <*> traverse wrapJSVal args
-                liftIO $ putStrLn $ "Finished callback async on thread " <> show tid <> ":\n" <> stackInfo
+                when logCallbacks $ do
+                  liftIO $ putStrLn $ "Finished callback async on thread " <> show tid <> ":\n" <> stackInfo
               return ()
             Nothing -> error $ "callback " <> show callbackId <> " called, but does not exist"
         Rsp_FreeCallback callbackId -> do
@@ -224,11 +227,13 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
                                 , _jsContextRef_syncState = syncStateLocal }
                   run = do
                     tid <- liftIO myThreadId
-                    stackInfo <- liftIO $ renderStack <$> ccsToStrings (_callback_createdAt callback)
-                    liftIO $ putStrLn $ "Starting callback sync on thread " <> show tid <> ":\n" <> stackInfo
+                    when logCallbacks $ do
+                      stackInfo <- liftIO $ renderStack <$> ccsToStrings (_callback_createdAt callback)
+                      liftIO $ putStrLn $ "Starting callback sync on thread " <> show tid <> ":\n" <> stackInfo
                     result <- ((Right <$>) $ join $ _callback_value callback <$> wrapJSVal fObj <*> wrapJSVal this <*> traverse wrapJSVal args)
                       `catchError` (return . Left)
-                    liftIO $ putStrLn $ "Finished callback sync on thread " <> show tid <> ":\n" <> stackInfo
+                    when logCallbacks $ do
+                      liftIO $ putStrLn $ "Finished callback sync on thread " <> show tid <> ":\n" <> stackInfo
                     pure result
               forkIO $ do
                 cbResult :: CallbackResult <- try $ flip runReaderT syncEnv $ unJSM $ run
