@@ -140,8 +140,8 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
             Just callback -> do
               _ <- forkIO $ void $ flip runJSM env $ do
                 tid <- liftIO myThreadId
+                stackInfo <- liftIO $ renderStack <$> ccsToStrings (_callback_createdAt callback)
                 when logCallbacks $ do
-                  stackInfo <- liftIO $ renderStack <$> ccsToStrings (_callback_createdAt callback)
                   liftIO $ putStrLn $ "Starting callback async on thread " <> show tid <> ":\n" <> stackInfo
                 _ <- join $ _callback_value callback <$> wrapJSVal fObj <*> wrapJSVal this <*> traverse wrapJSVal args
                 when logCallbacks $ do
@@ -227,8 +227,8 @@ runJavaScriptInt sendReqsTimeout pendingReqsLimit sendReqsBatch = do
                                 , _jsContextRef_syncState = syncStateLocal }
                   run = do
                     tid <- liftIO myThreadId
+                    stackInfo <- liftIO $ renderStack <$> ccsToStrings (_callback_createdAt callback)
                     when logCallbacks $ do
-                      stackInfo <- liftIO $ renderStack <$> ccsToStrings (_callback_createdAt callback)
                       liftIO $ putStrLn $ "Starting callback sync on thread " <> show tid <> ":\n" <> stackInfo
                     result <- ((Right <$>) $ join $ _callback_value callback <$> wrapJSVal fObj <*> wrapJSVal this <*> traverse wrapJSVal args)
                       `catchError` (return . Left)
