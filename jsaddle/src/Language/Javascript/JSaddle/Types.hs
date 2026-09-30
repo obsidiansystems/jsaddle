@@ -135,7 +135,7 @@ import Data.Monoid
 import Control.Concurrent (myThreadId, ThreadId, threadDelay)
 import Control.DeepSeq
 import Control.Exception (Exception, throwIO, SomeException)
-import Control.Monad (void)
+import Control.Monad (void, forever, join)
 import Control.Monad.Catch (MonadThrow, MonadCatch(..), MonadMask(..))
 import Control.Monad.Except
 import Control.Monad.Trans.Cont (ContT(..))
