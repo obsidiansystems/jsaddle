@@ -1,6 +1,8 @@
 {-# LANGUAGE CPP #-}
+#ifdef ghcjs_HOST_OS
 {-# LANGUAGE JavaScriptFFI #-}
 {-# LANGUAGE ForeignFunctionInterface #-}
+#endif
 {-# LANGUAGE UnliftedFFITypes #-}
 {-# LANGUAGE GHCForeignImportPrim #-}
 {-# LANGUAGE MagicHash #-}
